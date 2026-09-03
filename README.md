@@ -7,18 +7,23 @@ policy** governing every id the API returns.
 Each spec is normative on its own terms. Together they define what the platform
 calls things and what it is allowed to do to them.
 
-## [ORDERSTATEMACHINE.md](ORDERSTATEMACHINE.md) — order lifecycle
+## [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md) — order lifecycle
 
 - The **12 canonical order statuses** (`Pending`, `Issued`, terminal EXIT
   statuses, transitional `PartFlown`, and the recoverable `Blocked`/`Unknown`).
 - The **Workflows → Transitions → Events** contract table — the exhaustive,
   normative list of valid `(from, to)` pairs and the event each one emits.
+- The **naming convention**: workflows are `PascalCase` (`AirOrderCreate`),
+  requests are `camelCase` (`airOrderCreate`). Because a workflow is named after
+  its terminating request, case is the only thing that tells them apart — and it
+  is normative.
 - The **coupon model** used to derive the flown EXIT statuses
   (`AllFlown`, `SomeFlown`, `AllNoShow`).
-- The **`AirOrderChangeNotif`** inbound callback and its canonical `TYPE` enum
+- The **`airOrderChangeNotif`** inbound callback and its canonical `TYPE` enum
   (informational only — never a status change).
 - The **API Requester** layer: how provider-specific request sequences collapse
-  atomically into exactly one canonical transition and one event.
+  atomically into exactly one canonical transition and one event, plus the full
+  workflow ↔ request catalogue.
 - The **layer contract** binding persistence, controller/service, API, front
   end, and tests to the exact canonical names.
 
