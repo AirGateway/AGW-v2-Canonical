@@ -47,8 +47,9 @@ calls things and what it is allowed to do to them.
   which is what makes `Pending` → `Sent` (resend) meaningful.
 - The **6 option statuses**, and why a proposal may carry **more than one**
   `Approved` option.
-- The **migration table** from the 7-status set currently on `sandbox`, which is
-  not this machine.
+- **Three vocabularies meet on a proposal** and must never be mixed: the
+  proposal's seven statuses, an option's six, and each backing order's own.
+  `Expired` and `Pending` exist in more than one and mean different things.
 
 ## [IDS.md](IDS.md) — the AGW ID policy
 

@@ -52,10 +52,8 @@ same thing:
 | **Proposal** `Pending` | The ball is with the **agency**. The traveller has acted — approved an option, or asked for changes — and an agent now owes them something. |
 | **Order** `Pending` | The order is **held with the airline**, unticketed, inside its payment time limit. |
 
-This overlap is **deliberate and recorded**, not an oversight. It replaces the earlier
-`ActionRequired`, which existed precisely to avoid the collision. The collision is
-accepted because `Pending` is what agents actually say, and the cost is paid here
-instead:
+This overlap is **deliberate and recorded**, not an oversight: `Pending` is what agents
+actually say about a proposal, so the name is kept and the cost is paid here instead:
 
 - **Never write or say a bare "Pending".** In code, in logs, in UI copy and in support
   conversations it is always *proposal status* `Pending` or *order status* `Pending`.
@@ -67,15 +65,18 @@ instead:
 
 ## The 7 proposal statuses
 
+**These seven are the complete set.** A proposal is always in exactly one of them, and
+no other value may ever be written to `proposal.status`.
+
 | Status | Meaning | Waiting on | Terminal |
 |---|---|---|---|
-| `New` | Fresh traveller-initiated request. Nobody has taken it. | the agency | no |
-| `Open` | Accepted and/or assigned to an agent, who is working it. | the agency | no |
-| `Sent` | At least one order is attached and the proposal has been sent to the traveller for review. | the traveller | no |
-| `Pending` | Requires agent action: the traveller approved an option, or asked for changes. Can be **resent**, which returns it to `Sent`. | the agency | no |
-| `Expired` | The proposal's expiration time fell due. | — | **yes** |
-| `Cancelled` | The traveller actively cancelled the proposal, with or without comments. | — | **yes** |
-| `Confirmed` | The traveller approved one or more of the offered orders and the proposal is fulfilled. | — | **yes** |
+| `New` | Fresh new traveller-initiated proposal request. | the agency | no |
+| `Open` | Proposal request accepted and/or assigned to an agent. | the agency | no |
+| `Sent` | The proposal has some orders attached (at least one) and has been sent to the traveller for review/approval. | the traveller | no |
+| `Pending` | Requires agent action. The traveller has approved one, or added comments/detail to get new options. Can be **resent**, which sets it to `Sent` again. | the agency | no |
+| `Expired` | The expiration time of the proposal is due. | — | **yes** |
+| `Cancelled` | The traveller has actively cancelled the proposal, with or without comments. | — | **yes** |
+| `Confirmed` | The traveller has approved one or more orders among the options and the proposal can be considered fulfilled. | — | **yes** |
 
 ### Why each one exists
 
@@ -240,12 +241,18 @@ Two guards, both enforced before anything is written:
 - Assigning to whoever already holds it is a **successful no-op**, not an error, so a
   double-tapped picker does not litter the trail.
 
-## The 6 option statuses
+## The 6 option statuses — a DIFFERENT vocabulary
 
-An option is one held order attached to a proposal. Option statuses record the
-**selection outcome only** — whether the backing order was actually cancelled or issued
-is carried by that order's own status, and the two are legitimately out of step while an
-asynchronous cancel is in flight.
+> **These are not proposal statuses and never appear in `proposal.status`.** An option
+> is one attached order; it carries its own status on its own axis. Three vocabularies
+> meet on a proposal and must never be mixed: the **proposal's** seven statuses above,
+> an **option's** six below, and each backing **order's** own statuses in
+> [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md). `Expired` exists in all three and
+> means something different in each.
+
+Option statuses record the **selection outcome only** — whether the backing order was
+actually cancelled or issued is carried by that order's own status, and the two are
+legitimately out of step while an asynchronous cancel is in flight.
 
 | Status | Meaning |
 |---|---|
@@ -386,30 +393,13 @@ rejected at the write boundary rather than created on demand.
 **Adding or renaming a status touches all six.** Behaviour changes and spec changes land
 in the same PR — this file is updated first, never after the fact.
 
-## Migration from the shipped 7-status set
-
-What is on `sandbox` today is **not** this machine. The delta, for whoever implements it:
-
-| Shipped (sandbox) | Canonical (this file) | Note |
-|---|---|---|
-| `ActionRequired` | **`Pending`** | Rename. See the `Pending` disambiguation section. |
-| `Declined` | **`Cancelled`** | Rename **and** widen: `Declined` was only "rejected every option", from `Sent`. `Cancelled` is the traveller pulling out from any live status. |
-| `Closed` | **removed** | See Known gaps. |
-| — | **`Open`** | New. |
-| `New` → `Sent` on first option | **`Open` → `Sent` on `airProposalSend`** | Send becomes an explicit operation; attaching no longer sends. |
-| — | **`Pending` → `Sent`** | New: resend. |
-| at most one `Accepted` option | **one or more `Approved`** | Rename, and drop the partial unique index. |
-| `airProposalAccept` (one option id) | **`airProposalApprove` (list of ids)** | |
-| — | **`airProposalSend`**, **`airProposalRequestChanges`**, **`airProposalCancel`** | New operations. |
-| `airProposalClose` | **removed** | |
-
 ## Known gaps
 
 Deliberate, tracked, and never precedent.
 
 | Gap | Status |
 |---|---|
-| **An agency cannot dispose of a request it will not serve.** Dropping `Closed` leaves only two exits for an unwanted request: wait for the clock, or ask the traveller to cancel. Neither records *the agency declined this*, so "how often did we turn work away?" is unanswerable. Reintroducing an agency-side terminal status is the obvious fix if that question is ever asked. | Open |
 | **The expiry sweep is not implemented.** `Expired` is declared, seeded and mirrored everywhere, and the transitions above are normative — but nothing yet moves a proposal into it. It will follow the `/agw/orders/status/expire` precedent: a cross-tenant scheduler-driven `POST` deriving the outstanding set from current state on every run, which makes the sweep itself the retry. | Open |
-| **None of this machine is implemented.** `sandbox` carries the older 7-status set; see the migration table. | Open |
+| **An agency cannot dispose of a request it will not serve.** The only exits for an unwanted request are the clock and the traveller cancelling, so *the agency declined this* is not recordable and "how often did we turn work away?" cannot be answered apart from "how often did customers say no?". An agency-side terminal status is the fix if that question is ever asked. | Open |
+| **None of this machine is implemented.** Every layer named in the layer contract carries an older, different status set and must be migrated to this one. | Open |
 | **BookingPad cannot raise a proposal or attach an order to one.** `airProposalCreate` and `airProposalOfferOption` exist on AGW API V2; BookingPad has no UI for either, so the agent-side entry point does not exist in the product. | Open |
