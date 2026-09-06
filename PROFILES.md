@@ -1,0 +1,417 @@
+# Profiles — Travellers and Companies — Single Source of Truth
+
+> **Canonical spec — single source of truth.** This document is *the* authoritative
+> definition of the **Traveller** and **Company** profile items: what each one is, the
+> **statuses** they may hold, the **associations** between them and the rest of the
+> platform, and the **validations** every layer MUST apply. All layers — hub
+> persistence, AGW API V2, BookingPad, the traveller app — MUST conform to the exact
+> names, states and rules defined here. Do not invent fields, statuses or associations
+> without updating this file via PR.
+>
+> If any code, doc, or skill contradicts this file, this file wins and the other must
+> be corrected.
+
+## What a profile is, and what it is not
+
+A profile is **the agency's own record of a person, or of the organisation that person
+travels for**. It is a roster the agency curates. It is *not* a booking, not a copy of
+one, and not derived from one.
+
+This is the rule everything below follows from, and it has a sharp edge:
+
+- **A booking is a snapshot; a profile is the source.** An order carries whatever
+  spelling of a name, whichever document and whichever address were sent to the airline
+  on the day. That is evidence of what was booked and must never be rewritten. The
+  profile is what the agency believes is *currently* true about the person, and it is
+  edited freely.
+- **A booking may never silently rewrite a profile.** Resolution by email finds a person
+  and, when nobody holds that address, creates one — but an existing profile is returned
+  **untouched**. Resolving is not a back door for overwriting a roster the agency
+  maintains.
+- **A profile may never silently rewrite a booking.** Correcting a passport number on a
+  profile does not reach into an issued order. Changing what an airline holds is an
+  order servicing workflow in [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md).
+
+The two are linked, not merged: `order_passengers.traveler_id` points from the snapshot
+back to the source, which is what makes "show me this person's trips" answerable at all.
+
+### A traveller is identified by their email address
+
+Not by name — names are shared, misspelled, transliterated, and returned by airlines in
+forms nobody typed. **Email is the identity**, and it is what every entry point keys on:
+`Ag-Traveller` names a traveller by address, booking links resolve a passenger by
+address, and a proposal names its subject by the traveller that address resolved to.
+
+Two consequences are normative:
+
+- **An address is unique within a company**, case-insensitively. This is what makes it
+  usable as an identifier at all.
+- **It is unique within a company, not within an agency.** An agency serving several
+  corporates may legitimately hold two different people behind one address. Resolving
+  such an address across an agency is a **`409`**, never a guess — picking one attaches
+  somebody else's trips to this person.
+
+## Naming conventions
+
+- **The API spells it `traveller`; the database spells it `traveler`.** British on every
+  wire format and in every API field name, US in every database identifier, to match
+  `public.travelers` and `bookings.order_passengers.traveler_id`. The boundary is the
+  repository layer. This is deliberate, it is already the rule in hub, and it is not to
+  be "fixed" in either direction.
+- **Statuses** — PascalCase (`Active`, `Provisional`). Stored values MUST match exactly;
+  display labels may differ, stored values may not.
+- **Operations** — camelCase `operationId` matching AGW API V2 (`profileTravellerCreate`),
+  PascalCase summary (`ProfileTravellerCreate`). As with proposals there is **no
+  PascalCase workflow layer**: nothing here dispatches to a provider, so a profile
+  operation is one action in one call.
+- **API field names are camelCase** (`companyId`, `travellerCode`), matching the rest of
+  AGW API V2. Hub's own `/agw`, `/agent` and `/admin` surfaces use snake_case; the
+  translation is AGW API V2's job.
+
+### The namespace sits outside `air`
+
+Profiles live under **`/v2/profiles`** — `/v2/profiles/travellers` and
+`/v2/profiles/companies` — not under `/v2/air`. A profile is not an NDC concept, no
+airline is involved in creating one, and none of these operations touch a provider.
+
+`profiles` is not a new word for the platform to learn: BookingPad already calls the
+section Profiles with Company and Traveller tabs, hub's RBAC already carries
+`profile_traveler`, `profile_corporate` and `pms.profiles`, and hub's domain already has
+`ProfileRoleTraveler` and `ProfileDocument`.
+
+## The two items
+
+### Traveller
+
+A person the agency books for. Belongs to exactly one company.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | UUID | issued | Platform-issued, stable forever. See [IDS.md](IDS.md) — an *issued* id, not a provider handle; nothing to mint. |
+| `companyId` | UUID | **yes** | The company whose roster this person is on. Immutable in spirit, movable in fact — see *Reparenting* below. |
+| `status` | enum | **yes** | One of the three below. |
+| `email` | email | **yes** on create | The identity. Unique per company, case-insensitive. |
+| `name` | string(255) | for `Active` | Given name. |
+| `surname` | string(255) | for `Active` | Family name. |
+| `title` | string(255) | no | `MR`, `MRS`, `MS`, `DR`… Uppercase, not enumerated — passed through to the airline. |
+| `gender` | enum | no | See *Vocabularies inherited from the Air surface*. |
+| `birthdate` | date | no | ISO 8601 `YYYY-MM-DD`. No time, no zone — a date of birth is not an instant. |
+| `documents[]` | Document | no | Identity documents. Shape is normative below. |
+| `phoneCountryCode` | string(10) | no | ISO 3166-1 alpha-2, uppercase. |
+| `phoneCode` | string(20) | no | Dialling code, digits only, no `+`. |
+| `phoneNumber` | string(255) | no | National number, digits only. |
+| `addressCountryCode` | string(10) | no | ISO 3166-1 alpha-2, uppercase. |
+| `addressPostalCode` | string(255) | no | |
+| `addressCityName` | string(255) | no | |
+| `addressStreet` | string(255) | no | |
+| `frequentFlyerNumbers[]` | FrequentFlyer | no | Shape is normative below. |
+| `travellerCode` | string | no | The agency's or corporate's own code for this person. Unique per company where present. |
+| `homebase` | string(3) | no | IATA airport or city code, uppercase. The person's home departure point. |
+| `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
+
+**Document** — the shape is **exactly the booking passenger document**, field for field,
+because a profile document exists to become one:
+
+| Field | Notes |
+|---|---|
+| `type` | Document kind. Vocabulary inherited from the Air surface — see below. |
+| `id` | The document number as printed. |
+| `expirationDate` | ISO 8601 `YYYY-MM-DD`. Widened to a datetime at the Air boundary, which is where that representation belongs. |
+| `issuingCountryCode` | ISO 3166-1 alpha-2, uppercase. |
+| `citizenshipCountryCode` | ISO 3166-1 alpha-2, uppercase. |
+| `residenceCountryCode` | ISO 3166-1 alpha-2, uppercase. |
+| `fiscalName` | Name as printed on the document, where it differs from `name`/`surname`. |
+
+There is no `nationality` field. **Nationality is `documents[].citizenshipCountryCode`
+on the primary document**, and anything displaying "nationality" derives it there rather
+than storing a second, divergent copy.
+
+**FrequentFlyer** — `airlineCode` (IATA, 2 characters, uppercase) plus `number`. **Not
+an alliance.** A frequent-flyer account belongs to one carrier's programme and a booking
+must name that carrier; an alliance cannot be sent to an airline. See *Known
+non-conformance*.
+
+### Company
+
+The organisation a traveller travels for — a corporate account of the agency. Every
+traveller has one; there is no such thing as a company-less profile.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | UUID | issued | Platform-issued, stable forever. |
+| `agencyId` | UUID | **yes** | The owning agency. The root of tenancy for everything below it. |
+| `consumerId` | UUID | **yes** | The tenant the agency belongs to. |
+| `status` | enum | **yes** | `Active` or `Inactive`. |
+| `name` | string(255) | **yes** | Non-empty. |
+| `accountNumber` | string(255) | no | The corporate's account reference. Surfaced in BookingPad as the GDS account id. |
+| `domains[]` | hostname | no | Email domains belonging to this company. Lowercase. **Unique across all companies** — a domain identifies exactly one. |
+| `discountCodes` | map | no | Negotiated codes, keyed by airline. |
+| `loyaltyProgramDiscountCodes` | map | no | As above, for loyalty programmes. |
+| `customFields` | map | no | Agency-defined key/value pairs. |
+| `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
+
+Remarks are **not** a company field. They are definitions in `public.remarks` attached
+through `public.company_remarks`; the legacy `companies.remarks` array is deprecated and
+MUST NOT be read or written by any new code.
+
+## The 3 traveller statuses
+
+**These three are the complete set.** A traveller is always in exactly one of them, and
+no other value may be written to `traveller.status`.
+
+| Status | Meaning | Appears in pickers | Terminal |
+|---|---|---|---|
+| `Provisional` | Created by the platform from a booking passenger or a proposal request, never reviewed by an agent. | yes, flagged | no |
+| `Active` | A curated profile the agency stands behind. Complete enough to book. | yes | no |
+| `Inactive` | Retained for history, withdrawn from everyday use. | no | no |
+
+None is terminal. Deletion is not a status — see *Deletion*.
+
+### Why each one exists
+
+**`Provisional`** is the whole reason this is a status set and not a boolean.
+
+Profiles arrive by two very different routes. An agent curates one, or a CSV roster is
+imported — that is the agency asserting something. Or one is *minted by the platform*
+from an order passenger or a trip request, in which case its contents are whatever a
+booking payload happened to carry, which is a far worse source of truth than a roster an
+agency maintains. Today those two are indistinguishable the moment they are written, and
+an agency has no way to ask **"which of these did we actually check?"**
+
+`Provisional` makes that question answerable, and it gives the answer somewhere to go:
+the agency reviews the profile and it becomes `Active`.
+
+- **Resolution may only ever create `Provisional`.** `profileTravellerResolve` and the
+  booking-link path never mint an `Active` profile. This is what makes the distinction
+  load-bearing rather than advisory.
+- **`Provisional` is not "invalid".** The person is real and their address is real; they
+  are bookable, listable and selectable. They are merely unvouched-for.
+
+**`Active`** is a claim about completeness, not merely a flag. A profile may only be
+`Active` when it carries an `email`, a `name` and a `surname` — the three fields without
+which it cannot become a booking passenger. That invariant is why `Active` is worth
+having: it means *this one is ready*, and a picker showing `Active` profiles is showing
+things that will not fail at OrderCreate.
+
+**`Inactive`** exists because deleting is usually the wrong answer. A person leaves the
+company, and their profile still has to resolve — proposals point at it with
+`ON DELETE RESTRICT`, past orders point at it, and an agency's own history is worth
+more than a tidy list. `Inactive` withdraws them from pickers and default listings while
+keeping every reference intact.
+
+`Inactive` is a **display and selection** state. It does not forbid anything, and in
+particular it does not block resolution: a person who books again is by definition
+travelling again, so resolution finds them and **reactivates** them. The alternative is a
+roster that hides somebody who is currently on a booked trip, which is worse than the
+small surprise of a profile coming back.
+
+## The 2 company statuses
+
+| Status | Meaning | Appears in pickers | Terminal |
+|---|---|---|---|
+| `Active` | A live corporate account. | yes | no |
+| `Inactive` | Retained for history, withdrawn from everyday use. | no | no |
+
+**There is deliberately no `Provisional` for companies, and the asymmetry is the point.**
+Nothing on the platform auto-creates a company: resolution requires a `companyId` to be
+given, precisely because creating a traveller means deciding whose roster they join and
+only the caller knows that. Every company that exists was created by a person, so there
+is no unvouched-for population to distinguish.
+
+## Diagram
+
+```mermaid
+---
+title: AirGateway Traveller Profile Status State Machine
+---
+stateDiagram-v2
+    direction LR
+
+    [*] --> Provisional: profileTravellerResolve (minted from a booking or a trip request)
+    [*] --> Active:      profileTravellerCreate / profileTravellerImport
+
+    Provisional --> Active:   profileTravellerUpdate (an agent reviews it)
+    Provisional --> Inactive: profileTravellerUpdate (unwanted, but referenced)
+
+    Active   --> Inactive: profileTravellerUpdate
+    Inactive --> Active:   profileTravellerUpdate
+    Inactive --> Active:   profileTravellerResolve (they are travelling again)
+
+    note right of Provisional
+        Resolution may ONLY mint Provisional.
+        Nothing else about an existing profile
+        is touched when it is resolved.
+
+        Active requires email + name + surname.
+        A profile missing any of them cannot
+        enter Active and is rejected 422.
+
+        Inactive is never reachable from
+        nothing: a profile is created live.
+    end note
+```
+
+## Transitions — the normative table
+
+Every valid `(from, to)` pair and the operation that causes it. **Anything not in this
+table is invalid** and MUST be rejected with `409 Conflict`.
+
+| From | To | Operation | Notes |
+|---|---|---|---|
+| — | `Provisional` | `profileTravellerResolve` | Address nobody held. Identity taken from the passenger or request payload. |
+| — | `Active` | `profileTravellerCreate` | An agent asserting a profile. Rejected `422` if `email`, `name` or `surname` is absent. |
+| — | `Active` | `profileTravellerImport` | CSV roster. Rows failing the `Active` invariant land `Provisional` rather than failing the import. |
+| `Provisional` | `Active` | `profileTravellerUpdate` | Explicitly, or implicitly on the first agent edit that satisfies the invariant. |
+| `Provisional` | `Inactive` | `profileTravellerUpdate` | A minted profile the agency does not want offered but cannot delete. |
+| `Active` | `Inactive` | `profileTravellerUpdate` | |
+| `Inactive` | `Active` | `profileTravellerUpdate` | Deliberate reactivation. |
+| `Inactive` | `Active` | `profileTravellerResolve` | Automatic — they are on a new booking or request. |
+| — | `Active` | `profileCompanyCreate` | Companies are created live. |
+| `Active` | `Inactive` | `profileCompanyUpdate` | |
+| `Inactive` | `Active` | `profileCompanyUpdate` | |
+
+### Transitions that deliberately do NOT exist
+
+- **Nothing returns to `Provisional`.** Once an agency has looked at a profile, that fact
+  does not un-happen. A profile it no longer trusts goes to `Inactive`.
+- **Resolution never moves `Provisional` → `Active`.** Only a human review does. A
+  second booking is more evidence the person is real, not evidence anyone checked them.
+- **Nothing auto-`Inactive`s.** No sweep, no inactivity clock. A profile going quiet is
+  not the same as an agency deciding to withdraw it, and guessing produces a roster that
+  silently loses people.
+
+## Associations — the normative table
+
+| From | To | Cardinality | On delete of the target | Enforced |
+|---|---|---|---|---|
+| Traveller | Company | exactly one, **required** | `RESTRICT` — a company holding travellers cannot be deleted | FK `travelers_company_id_fkey` |
+| Company | Agency | exactly one, **required** | `RESTRICT` | FK `companies_agency_id_fkey` |
+| Company | Consumer | exactly one, **required** | — | FK |
+| Traveller | **Agency** | exactly one, **derived** | — | **Not stored.** See below. |
+| Order passenger | Traveller | zero or one | `SET NULL` — the booking survives, unlinked | FK `order_passengers_traveler_id_fkey` |
+| Order | Company | zero or one | `SET NULL` | FK `orders_company_id_fkey` |
+| Proposal | Traveller | exactly one, **required** | `RESTRICT` — a traveller with a proposal cannot be deleted | FK `proposals_traveler_id_fkey` |
+| Proposal | Company | zero or one | `SET NULL` | FK `proposals_company_id_fkey` |
+
+### Tenancy: a traveller has no agency of their own
+
+**`travelers` carries no `agency_id`, and MUST NOT gain one.** A traveller's agency is
+`traveler → company → agency`, always derived, never stored — one path, no second copy to
+drift.
+
+Three rules follow, and they are the security surface of this entire spec:
+
+1. **Every read and every write on `/v2/profiles` is scoped to the calling agency**,
+   resolved from the authenticated session. There is no agency parameter on any of these
+   operations, so no caller can reach another agency's roster by asking for one.
+2. **A profile belonging to another agency is reported `404`, never `403`.** It must be
+   indistinguishable from one that does not exist — the rule proposals already follow.
+3. **The scope is applied in SQL, not by the caller.** AGW API V2 passing an agency id is
+   a request, not an enforcement; hub applies it again in the query, and the two layers
+   agreeing is the point.
+
+### Reparenting: moving a traveller between companies
+
+Permitted, and it is a real operation — a person changes employer within the same
+agency's book of business. Two guards:
+
+- The destination company MUST belong to the same agency. Moving a person across agencies
+  is not a profile edit; it is a new profile.
+- The move MUST respect email uniqueness in the **destination** company, and collide with
+  `409` when it does not.
+
+Past bookings and proposals do **not** follow the move. They record what was true then.
+
+## Validations
+
+Each row says who enforces it and what a violation returns.
+
+| Rule | Response | Enforced by |
+|---|---|---|
+| `companyId` present and the company exists | `422` | hub, before relying on the FK |
+| `email` unique within the company, case-insensitive | `409` | `travelers_company_id_email_key` (partial, `citext`) |
+| `email` present on create through `/v2/profiles` | `422` | AGW API V2 |
+| `email`, `name`, `surname` all present to enter `Active` | `422` | hub |
+| `travellerCode` unique within the company where present | `409` | **requires a new index** — see *Known gaps* |
+| Company `name` non-empty | `422` | `NOT NULL` |
+| Company `domains[]` not claimed by another company | `409` | hub `checkDomainsAvailable` |
+| Country codes ISO 3166-1 alpha-2, uppercase | `422` | AGW API V2 |
+| `homebase` a 3-letter IATA airport or city code, uppercase | `422` | AGW API V2 |
+| `birthdate` and `documents[].expirationDate` ISO 8601 `YYYY-MM-DD` | `422` | AGW API V2 |
+| Target profile outside the calling agency | `404` | hub, in SQL |
+| Any transition absent from the table above | `409` | hub |
+
+**`email` is optional in the data model and required on create.** Both are correct: rows
+predating this spec, and rows from CSV imports, legitimately carry no address, and the
+unique index is partial precisely so they are unaffected. New profiles created through
+`/v2/profiles` must carry one, because a traveller without an address cannot be resolved,
+cannot use the traveller app, and cannot be linked to a booking — it is a profile nothing
+can ever find.
+
+### Vocabularies inherited from the Air surface
+
+`gender`, `title` and `documents[].type` are **booking fields that a profile happens to
+store**. Their vocabulary is therefore the Air surface's, not this document's, and a
+profile MUST store exactly what a booking expects so that populating a passenger from a
+profile is a copy rather than a translation.
+
+Those vocabularies are currently **unpinned on the Air surface** and internally
+inconsistent — `documentType` is described as `P`/`ID`/`V`, exampled as `PP` in the
+schema and as `PASSPORT` in the request examples, while `gender` and `title` are bare
+strings with lowercase examples. Pinning them is a change to the Air spec and belongs in
+its own PR against [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md) and
+`specs/ndcjsonapiv2.openapi.yaml`. Until that lands, this file defers, and profile
+storage mirrors whatever the Air surface accepts. Recorded in *Known gaps*.
+
+## Deletion
+
+**Prefer `Inactive`.** Deleting a profile is lossy in a way that is not obvious at the
+moment somebody clicks it: an order passenger's link is `SET NULL`, so the booking
+survives but the person is gone from it, and "this traveller's trips" quietly returns
+fewer results forever.
+
+Where deletion is genuinely wanted, two conflicts are real and MUST be reported as such:
+
+| Attempt | Result |
+|---|---|
+| Delete a traveller referenced by any proposal | `409` — naming the proposal |
+| Delete a company that still holds travellers | `409` — naming the count |
+
+Both are `ON DELETE RESTRICT` at the database, so the constraint is already enforced.
+What is missing is the mapping: the violation currently surfaces as an untyped `500`.
+A `409` with a message an agent can act on is required before delete is exposed to
+anybody. See *Known gaps*.
+
+## The layer contract
+
+Hub is the **only** layer that persists this vocabulary, and — as with proposal statuses
+— the closed sets are declared in code and reconciled into their taxonomy tables at
+start-up, so an undeclared status is rejected at the write boundary rather than created
+on demand.
+
+| Layer | Where the names live | Rule |
+|---|---|---|
+| **hub-api-v2** | `domain/traveler.go`, `domain/company.go` | The single place the taxonomy is edited. Guards use the declared constants, never a string literal. |
+| **hub persistence** | `travelers.status`, `companies.status` and their taxonomy tables | FK-enforced. Requires a migration — neither column exists today. |
+| **hub tests** | `testdata/database/seeds/` | The harness does **not** run start-up reconciliation, so a new status needs a matching seed row or every test touching it fails. |
+| **agw-api-v2** | the `status` enums in `specs/ndcjsonapiv2.openapi.yaml` under `/v2/profiles` | Mirrors hub's sets. Never writes one hub does not declare. |
+| **BookingPad** | `features/profiles/models/` | Mirrors hub's sets. Replaces the current boolean `active` on both profile models. Labels may differ from stored values; stored values may not. |
+| **Traveller app** | its own mirror | Same rule. |
+
+**Adding or renaming a status touches all six.** Behaviour changes and spec changes land
+in the same PR — this file is updated first, never after the fact.
+
+## Known gaps
+
+Deliberate, tracked, and never precedent.
+
+| Gap | Status |
+|---|---|
+| **Neither `status` column exists.** `public.travelers` and `public.companies` have no status column and no taxonomy table. Every status in this document is normative but unimplemented; BookingPad's profile models currently carry a boolean `active` instead, and the migration must map existing rows — a row satisfying the `Active` invariant becomes `Active`, everything else becomes `Provisional`. | Open |
+| **`frequentFlyerNumbers[].alliance` is wrong and must become `airlineCode`.** A booking's `fqtvInfo` names a carrier (`airlineId: JU`) and an account number; an alliance cannot be sent to an airline, so the stored field cannot populate the booking field it exists for. Needs a migration in hub and a corresponding change on the Air surface. | Open |
+| **Delete returns `500`, not `409`.** Hub's traveller and company deletes wrap the FK violation and return it untyped, so deleting a traveller with a proposal — or a company with travellers — reaches the agent as an internal error. Delete MUST NOT be exposed on `/v2/profiles` until this is mapped. | Open |
+| **`/agw/travellers/{id}` applies no tenancy check.** It reads by id with no agency scope. Acceptable while its only callers are proposal hydration and booking links; a hard blocker for a public endpoint. | Open |
+| **An agency-wide traveller list is not expressible.** `travelers.List` filters on `company_id` and `email` only, with no join to `companies.agency_id`, so "every traveller my agency can see" cannot be asked. | Open |
+| **`travellerCode` has no uniqueness index.** The rule is normative above; the index does not exist. | Open |
+| **`gender`, `title` and `documentType` are unpinned on the Air surface**, and inconsistent within its own spec. Profiles defer to whatever that surface accepts until a separate PR pins them. | Open |
+| **Nothing consumes this spec yet.** `/v2/profiles` does not exist on AGW API V2; `/agw/companies` does not exist in hub; `/agw/travellers` offers read, by-email and resolve only; BookingPad's Profiles pages are entirely mocked. | Open |

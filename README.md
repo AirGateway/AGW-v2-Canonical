@@ -1,9 +1,9 @@
 # AGW Platform — Canonical Specs
 
-This repository holds the **single source of truth** for three platform-wide
+This repository holds the **single source of truth** for four platform-wide
 contracts: order **states, workflows, and events**, proposal **statuses and
-transitions**, and the **identifier policy** governing every id the API
-returns.
+transitions**, the **traveller and company profiles** an agency curates, and
+the **identifier policy** governing every id the API returns.
 
 Each spec is normative on its own terms. Together they define what the platform
 calls things and what it is allowed to do to them.
@@ -50,6 +50,34 @@ calls things and what it is allowed to do to them.
 - **Three vocabularies meet on a proposal** and must never be mixed: the
   proposal's seven statuses, an option's six, and each backing order's own.
   `Expired` and `Pending` exist in more than one and mean different things.
+
+## [PROFILES.md](PROFILES.md) — traveller and company profiles
+
+- The **two items** — `Traveller` and `Company` — field by field, including the
+  document shape that must match a booking passenger's exactly, and why there
+  is no `nationality` field.
+- The **3 traveller statuses** (`Provisional`, `Active`, `Inactive`) and the
+  **2 company statuses**, with the normative transition table. `Provisional`
+  is the load-bearing one: resolution may **only** mint `Provisional`, so an
+  agency can always tell a roster it curated from profiles the platform minted
+  from booking payloads.
+- **`Active` is an invariant, not a flag** — a profile may only be `Active`
+  when it carries an email, a name and a surname, the three fields without
+  which it cannot become a booking passenger.
+- The **identity rule**: a traveller is identified by **email**, unique within
+  a **company** — not within an agency, which is why resolving an address
+  across an agency is a `409` and never a guess.
+- The **associations table** with cardinality and delete behaviour, and the
+  **tenancy rule**: a traveller has no `agency_id` and must never gain one;
+  the agency is derived through the company, scoped in SQL, and a foreign
+  profile is `404`, never `403`.
+- The **validations**, each with the response code it produces and the layer
+  that enforces it — and why `email` is optional in the data model but
+  required on create.
+- **A profile is a source; a booking is a snapshot.** Neither silently
+  rewrites the other.
+- The **namespace decision**: profiles live under `/v2/profiles`, outside
+  `air`, because no airline is involved in creating one.
 
 ## [IDS.md](IDS.md) — the AGW ID policy
 
