@@ -1,9 +1,10 @@
 # AGW Platform — Canonical Specs
 
-This repository holds the **single source of truth** for four platform-wide
+This repository holds the **single source of truth** for five platform-wide
 contracts: order **states, workflows, and events**, proposal **statuses and
-transitions**, the **traveller and company profiles** an agency curates, and
-the **identifier policy** governing every id the API returns.
+transitions**, the **traveller and company profiles** an agency curates, the
+**identifier policy** governing every id the API returns, and the **namespace
+and naming policy** governing what the API calls things in the first place.
 
 Each spec is normative on its own terms. Together they define what the platform
 calls things and what it is allowed to do to them.
@@ -95,11 +96,36 @@ calls things and what it is allowed to do to them.
 - **Known non-conformance** — deliberate, tracked exceptions that are to be
   closed and are never precedent.
 
+## [NAMING.md](NAMING.md) — namespaces and operation naming
+
+- The rule: **a namespace names the domain of the *thing*, not the domain of its
+  contents.** `/v2/air` is for what varies by provider, offer or order; everything
+  else gets its own root namespace (`/v2/proposals`, `/v2/profiles`, `/v2/agency`).
+- The corollary that is easiest to get wrong: **a container is named for the
+  container, not for what is put inside it.** A proposal carries air options today
+  and may carry a hotel tomorrow, so it is `proposal`, never `airProposal`.
+- The test for anything new: **"does an airline have to exist for this thing to
+  exist?"** If not, it does not go under `air`.
+- The **operation naming shape** — `operationId` is `camelCase`
+  `<namespace><Resource><Verb>`, `summary` is the same string in `PascalCase`, the
+  resource segment is dropped when the namespace *is* the resource, and a
+  sub-resource keeps the **verb last** (`proposalOptionOffer`, not
+  `proposalOfferOption`).
+- The **schema rule**: a component carries its operation's prefix, and carries `Air`
+  only when the payload is itself air content.
+- The **layer contract** binding the spec, the generated Go, the hub API, the front
+  ends and these specs to one canonical name.
+- **How to rename an operation that has already shipped** — outright when it is not
+  in production, `deprecated: true` with the reason and shared schema `$ref`s when it
+  is.
+- **Known non-conformance** — deliberate, tracked exceptions, never precedent.
+
 ## Rules of engagement
 
-- All platform layers MUST conform to the exact names, transitions, and id
-  shapes defined here. No inventing states, renaming identifiers, or adding
-  transitions outside a PR that updates the relevant spec.
+- All platform layers MUST conform to the exact names, namespaces, transitions,
+  and id shapes defined here. No inventing states, renaming identifiers, adding
+  transitions, or introducing a path or `operationId` outside a PR that updates
+  the relevant spec.
 - Behaviour changes and spec changes land in the **same PR** — the spec is
   updated first, never after the fact.
 - If any code, doc, or skill contradicts these files, this repo wins. The order
