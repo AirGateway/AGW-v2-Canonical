@@ -419,19 +419,20 @@ of guessing. Where hub already has a route, it is marked as such and must not ch
 | `GET /agw/travellers/{id}` | **Exists** | Traveller detail |
 | `GET /agw/travellers/by-email` | **Exists** | Traveller-scoped requests. Not used by `/v2/profiles` |
 | `POST /agw/travellers/resolve` | **Exists** | Booking → profile linking. Not used by `/v2/profiles` |
-| `GET /agw/travellers` | **MISSING** | Traveller list, and BookingPad's traveller predictive search |
+| `GET /agw/travellers` | **Exists** — shipped in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29) | Traveller list, and BookingPad's traveller predictive search |
 | `POST /agw/travellers` | **MISSING** | Add a traveller |
 | `PATCH /agw/travellers/{id}` | **MISSING** | Edit a traveller |
 | `DELETE /agw/travellers/{id}` | **MISSING** | Remove a traveller — blocked anyway, see Known gaps |
-| `GET /agw/companies` | **MISSING** | Company list, and BookingPad's company predictive search |
-| `GET /agw/companies/{id}` | **MISSING** | Company detail |
+| `GET /agw/companies` | **Exists** — shipped in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29) | Company list, and BookingPad's company predictive search |
+| `GET /agw/companies/{id}` | **Exists** — shipped in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29) | Company detail |
 | `POST /agw/companies` | **MISSING** | Add a company |
 | `PATCH /agw/companies/{id}` | **MISSING** | Edit a company |
 | `DELETE /agw/companies/{id}` | **MISSING** | Remove a company — blocked anyway, see Known gaps |
 
-**The two listings are the priority.** They are what a picker needs, they are pure
-reads, and they are the only two blocking a booking from being snapped to a profile at
-all. The writes only block the Profiles management screen.
+**The two listings were the priority, and they have landed.** They are what a picker
+needs, they are pure reads, and they were the only two blocking a booking from being
+snapped to a profile at all. What remains missing is the writes, which block only the
+Profiles management screen — not the predictive search, and not a booking.
 
 ### Rules that hold for every route
 
@@ -522,7 +523,7 @@ Deliberate, tracked, and never precedent.
 | **An agency-wide traveller list is not expressible.** `travelers.List` filters on `company_id` and `email` only, with no join to `companies.agency_id`, so "every traveller my agency can see" cannot be asked. | Open |
 | **`travellerCode` has no uniqueness index.** The rule is normative above; the index does not exist. | Open |
 | **`gender`, `title` and `documentType` are unpinned on the Air surface**, and inconsistent within its own spec. Profiles defer to whatever that surface accepts until a separate PR pins them. | Open |
-| **The profile predictive search is broken in BookingPad, and this is why.** `/v2/profiles` shipped on AGW API V2 ([agw-api-v2#61](https://github.com/AirGateway/agw-api-v2/pull/61)) against hub routes that do not exist: `GET /agw/travellers` (list) and every `/agw/companies` route. An unrouted call falls through to Go's `ServeMux`, which answers a bare `404 page not found`, so an agent sees **"Profile not found."** on every keystroke and a booking cannot be snapped to a profile at all. The whole of `## The hub /agw contract` above is what closes this. | **Open — blocking** |
+| **The profile predictive search was broken in BookingPad, and this was why.** `/v2/profiles` shipped on AGW API V2 ([agw-api-v2#61](https://github.com/AirGateway/agw-api-v2/pull/61)) against hub routes that did not exist: `GET /agw/travellers` (list) and every `/agw/companies` route. An unrouted call falls through to Go's `ServeMux`, which answers a bare `404 page not found`, so an agent saw **"Profile not found."** on every keystroke. Closed by [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), which serves both listings. | Closed |
 | **A `404` from a missing route used to be indistinguishable from a missing profile.** Any `404` mapped to `AGW_profile_not_found`, whose detail is "Profile not found." — a plausible business answer for a routing failure, which sent everyone looking at data instead of at hub's routing table. [agw-api-v2#63](https://github.com/AirGateway/agw-api-v2/pull/63) now treats a `404` with no readable error body as a `500` naming the route. It makes the failure honest; it does not make the search work. | Fixed in agw-api-v2, root cause open |
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
-| **`/agw/travellers` list, `/agw/companies` and the profile writes are unclaimed work in hub.** Verified across every remote branch of hub-api-v2 on 2026-09-07: nothing implements them and nothing is in flight. | Open |
+| **The profile WRITES are still missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The Profiles management screen needs them; the predictive search and the booking snap do not. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29). | Open |
