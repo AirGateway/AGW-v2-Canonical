@@ -21,7 +21,8 @@ from it:
 
 - **No proposal status changes because an order changed.** A proposal moves only on an
   explicit action against the proposal itself: an agent takes it, attaches an option,
-  sends it; the traveller approves, asks for changes, or cancels; the sweep expires it.
+  sends it, or cancels it; the traveller approves, asks for changes, or cancels; the
+  sweep expires it.
 - **No order status changes because a proposal changed.** Holding, cancelling and
   issuing orders remain workflows in [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md),
   invoked separately.
@@ -75,7 +76,7 @@ no other value may ever be written to `proposal.status`.
 | `Sent` | The proposal has some orders attached (at least one) and has been sent to the traveller for review/approval. | the traveller | no |
 | `Pending` | Requires agent action. The traveller has approved one, or added comments/detail to get new options. Can be **resent**, which sets it to `Sent` again. | the agency | no |
 | `Expired` | The expiration time of the proposal is due. | — | **yes** |
-| `Cancelled` | The traveller has actively cancelled the proposal, with or without comments. | — | **yes** |
+| `Cancelled` | The proposal was actively cancelled: by the traveller, or by the **agency** at any time and from any live status — including a cancellation the traveller gave them outside the platform. | — | **yes** |
 | `Confirmed` | The traveller has approved one or more orders among the options and the proposal can be considered fulfilled. | — | **yes** |
 
 ### Why each one exists
@@ -102,10 +103,17 @@ alone does not distinguish them (the trail does):
 
 **`Expired`** — the traveller's deadline lapsed with nothing agreed.
 
-**`Cancelled`** — the traveller pulled out. An *active* decision, which is what
-separates it from `Expired`: being turned down and nobody acting in time are different
-signals for an agency, and an agency that cannot tell them apart cannot tell whether its
-options were bad or merely late.
+**`Cancelled`** — the engagement was called off on purpose. An *active* decision, which
+is what separates it from `Expired`: being turned down and nobody acting in time are
+different signals for an agency, and an agency that cannot tell them apart cannot tell
+whether its options were bad or merely late.
+
+**Either side may cancel, from any live status.** The traveller cancels in the traveller
+app; an **agency agent may cancel a proposal in `New`, `Open`, `Sent` or `Pending`**, at
+any point, from BookingPad. See
+[Cancellation is either side's](#cancellation-is-either-sides) — the agency path is not a
+lesser one, and it is the one that carries the traveller's decision when that decision
+arrived by phone, email or chat rather than through the traveller app.
 
 **`Confirmed`** — the only status meaning the trip is agreed. Deliberately an explicit
 agent action, **not** derived from a backing order reaching `Issued`: an airline
@@ -137,17 +145,21 @@ stateDiagram-v2
 
     Pending --> Confirmed: airProposalConfirm (approved orders issued)
 
-    New     --> Cancelled: airProposalCancel
-    Open    --> Cancelled: airProposalCancel
-    Sent    --> Cancelled: airProposalCancel
-    Pending --> Cancelled: airProposalCancel
+    New     --> Cancelled: airProposalCancel (traveller OR agency)
+    Open    --> Cancelled: airProposalCancel (traveller OR agency)
+    Sent    --> Cancelled: airProposalCancel (traveller OR agency)
+    Pending --> Cancelled: airProposalCancel (traveller OR agency)
 
     New  --> Expired: expiry sweep
     Open --> Expired: expiry sweep
     Sent --> Expired: expiry sweep
 
     note right of Cancelled
-        Cancel is the TRAVELLER's, from any live status.
+        Cancel is EITHER SIDE's, from any live status: the
+        traveller in the traveller app, or an agency agent in
+        BookingPad - who is often recording a cancellation the
+        traveller gave them by phone, email or chat.
+
         Expiry is the CLOCK's, and never applies to Pending:
         in Pending the ball is with the agency, and an
         agency's own inaction must not expire its customer's
@@ -185,10 +197,10 @@ with `409 Conflict`.
 | `Pending` | `Pending` | `airProposalOfferOption` / `airProposalWithdrawOption` | Agent | `OptionOffered` / `OptionWithdrawn` |
 | `Pending` | `Sent` | `airProposalSend` (resend) | Agent | `ProposalSent` (`resend: true`) |
 | `Pending` | `Confirmed` | `airProposalConfirm` | Agent | `ProposalConfirmed` |
-| `New` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
-| `Open` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
-| `Sent` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
-| `Pending` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
+| `New` | `Cancelled` | `airProposalCancel` | Traveller, Agent, Admin | `ProposalCancelled` |
+| `Open` | `Cancelled` | `airProposalCancel` | Traveller, Agent, Admin | `ProposalCancelled` |
+| `Sent` | `Cancelled` | `airProposalCancel` | Traveller, Agent, Admin | `ProposalCancelled` |
+| `Pending` | `Cancelled` | `airProposalCancel` | Traveller, Agent, Admin | `ProposalCancelled` |
 | `New` | `Expired` | expiry sweep | System | `ProposalExpired` |
 | `Open` | `Expired` | expiry sweep | System | `ProposalExpired` |
 | `Sent` | `Expired` | expiry sweep | System | `ProposalExpired` |
@@ -205,8 +217,55 @@ with `409 Conflict`.
 - **`airProposalApprove` and `airProposalRequestChanges` are the traveller's alone**, and
   only from `Sent`. One belonging to another traveller is reported **not found**, never
   forbidden — the two must be indistinguishable to a caller guessing ids.
-- **`airProposalCancel` is the traveller's alone**, from any live status.
+- **`airProposalCancel` is open to the traveller *and* to the agency**, from any live
+  status — `New`, `Open`, `Sent` or `Pending`. It is the one operation both sides hold.
+  Terminal is `409`, and it is the only guard on the transition itself: there is no
+  status, no attached option and no approval that blocks a cancel.
+- **Cancelling a proposal moves every non-terminal option to `Expired`, `Approved` ones
+  included.** The airline holds have to be released whichever way the proposal died, so
+  an approved option is no exception — cancelling a `Pending` proposal is normal, not a
+  corner case.
 - **Assignment never moves a proposal out of `Sent`, `Pending`, or a terminal status.**
+
+### Cancellation is either side's
+
+**A proposal may be cancelled by the agency at any time, from any live status.** Not only
+from `New`, and not only before it was sent: `Open`, `Sent` and `Pending` all cancel, and
+an approved option does not lock the proposal open.
+
+The reason is that **the platform is not the only channel the traveller has.** A
+traveller who has decided not to travel says so wherever it is easiest — a phone call, a
+reply to the agent's email, a WhatsApp message — and very often *never* returns to the
+traveller app to press the button. That decision is a fact the moment it is made. If the
+only way to record it were the traveller's own click, the agency would be left holding a
+live proposal and live airline holds on a trip everybody involved knows is off, until the
+clock eventually turned it into `Expired` — which would then be a lie about what
+happened.
+
+So the agency path exists to record the traveller's decision, not to overrule it:
+
+- **The status is the same `Cancelled`.** There is no separate agency-cancelled status,
+  and none is wanted: what happened is that the proposal was called off, and that is one
+  fact however it reached the system.
+- **An agency-side cancel MUST carry a comment**, unlike the traveller's, where it stays
+  optional. The comment names **where the decision came from** — "traveller confirmed by
+  phone", "per traveller's email of 12 May". This is the whole point of the path: without
+  it the trail says an agency cancelled its own customer's request for no recorded
+  reason, and the traveller, who reads this trail, has no way to see their own decision
+  in it.
+- **`ProposalCancelled` records the actor**, so agency-recorded and traveller-pressed
+  cancellations are told apart by *who*, never by a different status.
+- **The agent MUST belong to the proposal's own agency.** One belonging to another agency
+  is reported **not found**, exactly as it is for the traveller's own operations — the two
+  must be indistinguishable to a caller guessing ids.
+- **It is visible to the traveller.** `ProposalCancelled` is in the traveller's trail
+  (see [The two trails](#the-two-trails)) — a cancellation entered on their behalf is
+  exactly the kind of entry they must be able to check.
+
+What this path is **not**: it is not *the agency declined this*. `Cancelled` says the
+engagement was called off, and an agent using it is asserting the traveller called it
+off. Recording an agency's own refusal to serve a request is still a separate, open gap
+— see [Known gaps](#known-gaps).
 
 ### Transitions that deliberately do NOT exist
 
@@ -261,7 +320,7 @@ legitimately out of step while an asynchronous cancel is in flight.
 | `Rejected` | The traveller approved others and not this one. Its backing order is cancelled, or on its way to being cancelled. |
 | `RejectionFailed` | As `Rejected`, but releasing the airline hold failed permanently. An agent must intervene; this status exists so that need is visible rather than buried in a job log. |
 | `Withdrawn` | An agent pulled the option back before the traveller acted on it. |
-| `Expired` | The backing order's payment time limit lapsed, or the proposal was cancelled or expired, before this option was taken up. |
+| `Expired` | The backing order's payment time limit lapsed, or the proposal was cancelled or expired. Reached from `Offered` **and** from `Approved`: a cancelled proposal releases its holds whether or not the traveller had chosen this one. |
 
 ### A proposal may have MORE THAN ONE approved option
 
@@ -289,6 +348,7 @@ This is a **change from the earlier single-selection model** and it is load-bear
 | `Offered` | `Rejected` | `airProposalApprove` does **not** name this option |
 | `Offered` | `Withdrawn` | `airProposalWithdrawOption` |
 | `Offered` | `Expired` | `airProposalCancel`, the expiry sweep, or the backing order's payment TTL lapsing |
+| `Approved` | `Expired` | `airProposalCancel` — the proposal was called off after this option was chosen, so its hold is released |
 | `Approved` | `Rejected` | a later `airProposalApprove` drops it from the selection |
 | `Approved` | `Withdrawn` | `airProposalWithdrawOption` — the only way to undo an approval, and it returns the proposal to a resendable state |
 | `Rejected` | `RejectionFailed` | the cancellation dispatch reports a permanent failure |
@@ -343,7 +403,7 @@ says they did.
 | `ProposalSent` | The proposal was sent to the traveller. `details.resend` is `true` for every send after the first, so the trail shows the round trips rather than flattening them. |
 | `ChangesRequested` | The traveller asked for different options or added detail. Their comment is in the details. |
 | `OptionApproved` | The traveller approved one or more options. Details name **all** of them, and how many siblings that rejected. |
-| `ProposalCancelled` | The traveller cancelled. Comment optional — forcing one produces filler rather than insight. |
+| `ProposalCancelled` | The proposal was cancelled. The actor says by which side. Comment **optional for the traveller** — forcing one produces filler rather than insight — and **mandatory for an agent or admin**, where it names the external channel the traveller's decision arrived through. |
 | `ProposalConfirmed` | An agent confirmed after issuing the approved orders. |
 | `ProposalExpired` | The deadline fell due. `System` actor. |
 | `ExpiryChanged` | The deadline was set, extended or cleared. Details carry old and new. |
@@ -356,7 +416,8 @@ says they did.
 
 An agency reads **all** of it. A traveller reads the story of their own request —
 raised, sent, offered, withdrawn, approved, changes requested, cancelled, confirmed,
-expired, deadline changed, messaged — and **not** the parts where the agency is talking
+expired, deadline changed, messaged — **including a `ProposalCancelled` an agent entered
+on their behalf, comment and all**, and **not** the parts where the agency is talking
 to itself: `NoteAdded`, `AgentAssigned`, `OptionCancelRequested`, `OptionCancelFailed`,
 and anything an `Admin` did. That split is why an internal note and a message to the
 traveller are separate actions rather than one.
@@ -400,6 +461,7 @@ Deliberate, tracked, and never precedent.
 | Gap | Status |
 |---|---|
 | **The expiry sweep is not implemented.** `Expired` is declared, seeded and mirrored everywhere, and the transitions above are normative — but nothing yet moves a proposal into it. It will follow the `/agw/orders/status/expire` precedent: a cross-tenant scheduler-driven `POST` deriving the outstanding set from current state on every run, which makes the sweep itself the retry. | Open |
-| **An agency cannot dispose of a request it will not serve.** The only exits for an unwanted request are the clock and the traveller cancelling, so *the agency declined this* is not recordable and "how often did we turn work away?" cannot be answered apart from "how often did customers say no?". An agency-side terminal status is the fix if that question is ever asked. | Open |
+| **An agency cannot record that *it* turned a request down.** The agency can now cancel from any live status, but `Cancelled` asserts the **traveller's** decision however it was entered, so *the agency declined this* is still not recordable and "how often did we turn work away?" cannot be answered apart from "how often did customers say no?". An agency-side terminal status is the fix if that question is ever asked — reusing `Cancelled` for it is not, because it would corrupt the one thing that status means. | Open |
 | **None of this machine is implemented.** Every layer named in the layer contract carries an older, different status set and must be migrated to this one. | Open |
 | **BookingPad cannot raise a proposal or attach an order to one.** `airProposalCreate` and `airProposalOfferOption` exist on AGW API V2; BookingPad has no UI for either, so the agent-side entry point does not exist in the product. | Open |
+| **`airProposalCancel` does not exist on any layer.** Neither side can cancel today: hub declares no cancel transition, AGW API V2 exposes no operation, and BookingPad has no action — so the only exit an unwanted proposal actually has in the product is the expiry sweep, which is itself unimplemented. The transitions above are normative regardless; this row records that the agency path needs building, not designing. | Open |
