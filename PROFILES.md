@@ -401,6 +401,114 @@ on demand.
 **Adding or renaming a status touches all six.** Behaviour changes and spec changes land
 in the same PR — this file is updated first, never after the fact.
 
+## The hub `/agw` contract
+
+AGW API V2 holds no profile data. Every operation under `/v2/profiles` is a call into
+hub's `/agw` surface, and **that transport is already written and shipped** — see
+`internal/api/hubapi/profiles.go` in agw-api-v2, hand-rolled over `net/http` precisely
+because the generated SDK cannot carry methods for endpoints hub has not shipped.
+
+This section is therefore not a proposal. It is the contract agw-api-v2 **already calls
+today**, written down so hub's side can be implemented against it without a second round
+of guessing. Where hub already has a route, it is marked as such and must not change.
+
+### Route inventory
+
+| Route | Hub today | Needed for |
+|---|---|---|
+| `GET /agw/travellers/{id}` | **Exists** | Traveller detail |
+| `GET /agw/travellers/by-email` | **Exists** | Traveller-scoped requests. Not used by `/v2/profiles` |
+| `POST /agw/travellers/resolve` | **Exists** | Booking → profile linking. Not used by `/v2/profiles` |
+| `GET /agw/travellers` | **MISSING** | Traveller list, and BookingPad's traveller predictive search |
+| `POST /agw/travellers` | **MISSING** | Add a traveller |
+| `PATCH /agw/travellers/{id}` | **MISSING** | Edit a traveller |
+| `DELETE /agw/travellers/{id}` | **MISSING** | Remove a traveller — blocked anyway, see Known gaps |
+| `GET /agw/companies` | **MISSING** | Company list, and BookingPad's company predictive search |
+| `GET /agw/companies/{id}` | **MISSING** | Company detail |
+| `POST /agw/companies` | **MISSING** | Add a company |
+| `PATCH /agw/companies/{id}` | **MISSING** | Edit a company |
+| `DELETE /agw/companies/{id}` | **MISSING** | Remove a company — blocked anyway, see Known gaps |
+
+**The two listings are the priority.** They are what a picker needs, they are pure
+reads, and they are the only two blocking a booking from being snapped to a profile at
+all. The writes only block the Profiles management screen.
+
+### Rules that hold for every route
+
+- **Auth is the agw-api shared credential**, `Authorization: Bearer <credential>`, as
+  everywhere else under `/agw`. This is why `/agent/*` and `/admin/*` are not
+  substitutes: the first wants an agent JWT and the second is cross-tenant admin auth.
+- **`agency_id` is a mandatory query parameter on every route, including the writes and
+  the deletes**, and hub MUST apply it as a SQL predicate rather than trusting it.
+  A profile outside the named agency MUST read as **404, never 403** — a caller must not
+  be able to learn that another agency's profile exists.
+- **A traveller has no `agency_id` of its own.** The scope is
+  `travelers.company_id → companies.agency_id`, so the traveller listing needs that join.
+  It does not exist today, which is what makes an agency-wide traveller list
+  inexpressible (see Known gaps).
+- **Envelopes are hub's own.** A single item is `{"data": {…}}`. A listing is
+  `{"data": [ … ], "metadata": {"current_page", "page_size", "total_pages",
+  "total_records"}}`. A `DELETE` answers `204` with no body.
+- **Bodies are snake_case**, matching hub's existing conventions and its
+  `responses.Traveler` / `responses.Company` shapes.
+- **`PATCH` is absent-means-untouched.** A key that is not present is not edited; a key
+  present and `null` clears the field. agw-api-v2 relies on this — it builds the body
+  from only the fields the caller actually sent.
+
+### Paging and filters
+
+Both listings take `page` and `limit` (**`limit`, not `pageSize`** — hub's own name).
+
+`GET /agw/travellers` additionally takes, all optional, all AND-ed:
+
+| Parameter | Meaning |
+|---|---|
+| `traveller_id` | Narrows to one person. Sent when the request came in as that traveller |
+| `company_id` | That company's roster only |
+| `email` | Match on email |
+| `name` | Match on first name |
+| `surname` | Match on surname |
+| `status` | Repeatable. Deferred with the status column — see below |
+
+`GET /agw/companies` additionally takes `name` (match on name) and the same repeatable
+`status`.
+
+`name`, `surname` and `email` back a **predictive search**, so they MUST be
+case-insensitive partial matches, not equality. This is the one place where getting the
+matching semantics wrong still returns `200` and simply looks broken to an agent.
+
+### The two listings can ship before the `status` column
+
+`status` is normative in this document but no column exists yet, and **the read routes
+do not have to wait for it.** agw-api-v2 already derives a traveller's status when hub
+sends none — complete → `Active`, otherwise `Provisional` — and defaults a company's to
+`Active`, so a listing that omits `status` entirely is decoded correctly.
+
+The one thing hub MUST NOT do is accept a `status` filter it cannot honour and answer
+`200` with an unfiltered page: that turns a missing feature into a wrong answer. Until
+the column lands, reject `status` as `422` rather than ignoring it.
+
+### Error contract
+
+agw-api-v2 maps hub's status codes onto the codes a client sees, and two of those
+mappings depend on hub's body rather than its status:
+
+- **`404` MUST carry hub's normal RFC 7807 error body** (`title`, and a `detail` such as
+  `"Traveler not found."`), which is what `huma.Error404NotFound` already produces.
+  A `404` with no readable body is treated as *"this route is not implemented"* and
+  surfaced as a `500`, deliberately — see the Known gaps row, and
+  [agw-api-v2#63](https://github.com/AirGateway/agw-api-v2/pull/63).
+- **`409` is classified from its `detail` string.** A conflict whose detail mentions
+  `email` becomes `AGW_profile_email_taken`, one mentioning `domain` becomes
+  `AGW_profile_domain_taken`, and anything else becomes the generic
+  `AGW_profile_in_use`. The three have three different fixes — pick another address,
+  pick another domain, detach what still points at the profile — so the wording of
+  hub's detail is load-bearing and must keep naming the field it refused.
+- **`422`** is a validation refusal and surfaces as `AGW_profile_incomplete`, carrying
+  hub's detail through.
+- **`401`** means hub rejected our shared credential. That is our misconfiguration, not
+  the caller's, and is never passed through as a `401`.
+
 ## Known gaps
 
 Deliberate, tracked, and never precedent.
@@ -414,4 +522,7 @@ Deliberate, tracked, and never precedent.
 | **An agency-wide traveller list is not expressible.** `travelers.List` filters on `company_id` and `email` only, with no join to `companies.agency_id`, so "every traveller my agency can see" cannot be asked. | Open |
 | **`travellerCode` has no uniqueness index.** The rule is normative above; the index does not exist. | Open |
 | **`gender`, `title` and `documentType` are unpinned on the Air surface**, and inconsistent within its own spec. Profiles defer to whatever that surface accepts until a separate PR pins them. | Open |
-| **Nothing consumes this spec yet.** `/v2/profiles` does not exist on AGW API V2; `/agw/companies` does not exist in hub; `/agw/travellers` offers read, by-email and resolve only; BookingPad's Profiles pages are entirely mocked. | Open |
+| **The profile predictive search is broken in BookingPad, and this is why.** `/v2/profiles` shipped on AGW API V2 ([agw-api-v2#61](https://github.com/AirGateway/agw-api-v2/pull/61)) against hub routes that do not exist: `GET /agw/travellers` (list) and every `/agw/companies` route. An unrouted call falls through to Go's `ServeMux`, which answers a bare `404 page not found`, so an agent sees **"Profile not found."** on every keystroke and a booking cannot be snapped to a profile at all. The whole of `## The hub /agw contract` above is what closes this. | **Open — blocking** |
+| **A `404` from a missing route used to be indistinguishable from a missing profile.** Any `404` mapped to `AGW_profile_not_found`, whose detail is "Profile not found." — a plausible business answer for a routing failure, which sent everyone looking at data instead of at hub's routing table. [agw-api-v2#63](https://github.com/AirGateway/agw-api-v2/pull/63) now treats a `404` with no readable error body as a `500` naming the route. It makes the failure honest; it does not make the search work. | Fixed in agw-api-v2, root cause open |
+| **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
+| **`/agw/travellers` list, `/agw/companies` and the profile writes are unclaimed work in hub.** Verified across every remote branch of hub-api-v2 on 2026-09-07: nothing implements them and nothing is in flight. | Open |
