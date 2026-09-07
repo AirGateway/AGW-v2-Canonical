@@ -106,7 +106,7 @@ A person the agency books for. Belongs to exactly one company.
 | `addressStreet` | string(255) | no | |
 | `frequentFlyerNumbers[]` | FrequentFlyer | no | Shape is normative below. |
 | `travellerCode` | string | no | The agency's or corporate's own code for this person. Unique per company where present. |
-| `homebase` | string(3) | no | IATA airport or city code, uppercase. The person's home departure point. |
+| `homebase` | string | no | The person's home departure point, uppercased and otherwise passed through. **Not validated** — see *Known gaps*. |
 | `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
 
 **Document** — the shape is **exactly the booking passenger document**, field for field,
@@ -336,7 +336,6 @@ Each row says who enforces it and what a violation returns.
 | Company `name` non-empty | `422` | `NOT NULL` |
 | Company `domains[]` not claimed by another company | `409` | hub `checkDomainsAvailable` |
 | Country codes ISO 3166-1 alpha-2, uppercase | `422` | AGW API V2 |
-| `homebase` a 3-letter IATA airport or city code, uppercase | `422` | AGW API V2 |
 | `birthdate` and `documents[].expirationDate` ISO 8601 `YYYY-MM-DD` | `422` | AGW API V2 |
 | Target profile outside the calling agency | `404` | hub, in SQL |
 | Any transition absent from the table above | `409` | hub |
@@ -413,5 +412,6 @@ Deliberate, tracked, and never precedent.
 | **`/agw/travellers/{id}` applies no tenancy check.** It reads by id with no agency scope. Acceptable while its only callers are proposal hydration and booking links; a hard blocker for a public endpoint. | Open |
 | **An agency-wide traveller list is not expressible.** `travelers.List` filters on `company_id` and `email` only, with no join to `companies.agency_id`, so "every traveller my agency can see" cannot be asked. | Open |
 | **`travellerCode` has no uniqueness index.** The rule is normative above; the index does not exist. | Open |
+| **`homebase` has two incompatible readings.** Hub documents the column as an **ICAO** code and seeds it with four-letter values (`EDDM`); every airport code the platform otherwise handles — shopping origins, segment endpoints — is **IATA** three-letter. A profile feeds a search origin, so one of the two is wrong, and validating either would reject real stored data. Until it is settled the field is uppercased and passed through unchecked. | Open |
 | **`gender`, `title` and `documentType` are unpinned on the Air surface**, and inconsistent within its own spec. Profiles defer to whatever that surface accepts until a separate PR pins them. | Open |
 | **Nothing consumes this spec yet.** `/v2/profiles` does not exist on AGW API V2; `/agw/companies` does not exist in hub; `/agw/travellers` offers read, by-email and resolve only; BookingPad's Profiles pages are entirely mocked. | Open |
