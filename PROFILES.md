@@ -489,6 +489,39 @@ The one thing hub MUST NOT do is accept a `status` filter it cannot honour and a
 `200` with an unfiltered page: that turns a missing feature into a wrong answer. Until
 the column lands, reject `status` as `422` rather than ignoring it.
 
+**And the corollary, which MUST be read as part of the same rule: while hub refuses
+`status`, agw-api-v2 MUST NOT send it.** A rejection contract binds both ends. Stating
+only hub's half is what actually broke this surface — hub implemented the `422` exactly
+as written, agw kept forwarding the parameter, and *every* company and traveller listing
+failed, permanently.
+
+The trap is that the caller was never the one asking. agw-api-v2's service layer
+**substitutes a default filter when the request names no status** — `[Active]` for a
+company, `[Provisional, Active]` for a traveller — so a client asking for nothing still
+put `?status=Active` on the wire. **A default filter substituted by a service layer is
+still a filter on the wire**, and a contract clause about "a caller that sends `status`"
+does not cover it. BookingPad's Company picker, opened with an empty search box, was
+enough to trigger the `422`.
+
+Until the column lands, then:
+
+- Hub rejects `status` with a `422` (above).
+- agw-api-v2 omits `status` from the hub query entirely, and applies the filter itself
+  against the status it **derives** on read. This is not a workaround, it is the only
+  place the filter can work: hub has no column to filter on, so asking hub to filter was
+  never satisfiable.
+- The two stay consistent because the derived values are exactly what the defaults ask
+  for — a traveller derives to `Active` or `Provisional`, a company to `Active` — so the
+  default filter excludes nothing, and only an explicit status the data cannot yet hold
+  (`Inactive`) returns empty.
+
+Post-filtering costs one thing worth writing down: hub counts and slices the page before
+agw's filter runs, so an excluded row leaves a page one short of its `metadata`. That is
+unreachable while the defaults exclude nothing, and it is the reason this moves back to
+hub — filtering in SQL — the moment the column exists.
+
+Fixed in [agw-api-v2#66](https://github.com/AirGateway/agw-api-v2/pull/66).
+
 ### Error contract
 
 agw-api-v2 maps hub's status codes onto the codes a client sees, and two of those
@@ -505,8 +538,18 @@ mappings depend on hub's body rather than its status:
   `AGW_profile_in_use`. The three have three different fixes — pick another address,
   pick another domain, detach what still points at the profile — so the wording of
   hub's detail is load-bearing and must keep naming the field it refused.
-- **`422`** is a validation refusal and surfaces as `AGW_profile_incomplete`, carrying
-  hub's detail through.
+- **`422` is classified by the verb, not the body.** On a `POST`/`PATCH` it is hub
+  judging a payload agw sent on the caller's behalf, so it surfaces as
+  `AGW_profile_incomplete` — the caller's profile really is missing a field. On a **read**
+  there is no profile being written and nothing of the caller's to be incomplete: the only
+  thing hub can refuse on a `GET` is a query parameter agw chose to send, which makes it a
+  contract mismatch between the two services and surfaces as a `500` naming the route.
+  Note that hub's `detail` does **not** reach the client on either path — `APIError.Detail`
+  comes from agw's static error catalogue, so hub's wording survives only in agw's logs.
+  That is precisely how the status-filter `422` above stayed unexplained for so long: an
+  agent read "This profile is missing a field it needs." while hub had actually said
+  "Filtering profiles by status is not supported yet."
+  See [agw-api-v2#66](https://github.com/AirGateway/agw-api-v2/pull/66).
 - **`401`** means hub rejected our shared credential. That is our misconfiguration, not
   the caller's, and is never passed through as a `401`.
 
@@ -525,5 +568,6 @@ Deliberate, tracked, and never precedent.
 | **`gender`, `title` and `documentType` are unpinned on the Air surface**, and inconsistent within its own spec. Profiles defer to whatever that surface accepts until a separate PR pins them. | Open |
 | **The profile predictive search was broken in BookingPad, and this was why.** `/v2/profiles` shipped on AGW API V2 ([agw-api-v2#61](https://github.com/AirGateway/agw-api-v2/pull/61)) against hub routes that did not exist: `GET /agw/travellers` (list) and every `/agw/companies` route. An unrouted call falls through to Go's `ServeMux`, which answers a bare `404 page not found`, so an agent saw **"Profile not found."** on every keystroke. Closed by [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), which serves both listings. | Closed |
 | **A `404` from a missing route used to be indistinguishable from a missing profile.** Any `404` mapped to `AGW_profile_not_found`, whose detail is "Profile not found." — a plausible business answer for a routing failure, which sent everyone looking at data instead of at hub's routing table. [agw-api-v2#63](https://github.com/AirGateway/agw-api-v2/pull/63) now treats a `404` with no readable error body as a `500` naming the route. It makes the failure honest; it does not make the search work. | Fixed in agw-api-v2, root cause open |
+| **agw-api-v2 sent hub the `status` filter hub is required to refuse.** The rejection clause above was written as hub's obligation alone, so hub returned the mandated `422` while agw kept forwarding the parameter — and agw's service layer *substitutes* a default (`[Active]`, or `[Provisional, Active]`) when a caller names no status, so every company and traveller listing carried one. Both listings failed 100% of the time, including BookingPad's Company picker opened with an empty search box. Compounded by the `422` mapping: it reached agents as "This profile is missing a field it needs." Closed by [agw-api-v2#66](https://github.com/AirGateway/agw-api-v2/pull/66) — agw omits `status` and filters on the derived status itself. The corollary is now normative above. | Fixed |
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
 | **The profile WRITES are still missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The Profiles management screen needs them; the predictive search and the booking snap do not. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29). | Open |
