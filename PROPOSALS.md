@@ -35,12 +35,34 @@ are read together for display; **neither drives the other.**
 - **Statuses** — PascalCase (`New`, `Pending`). Stored values MUST match exactly;
   display labels may differ but stored values may not.
 - **Transitions** — named by the API operation that causes them, in **camelCase**
-  (`airProposalSend`, `airProposalApprove`), matching the AGW API V2 `operationId`.
+  (`proposalSend`, `proposalApprove`), matching the AGW API V2 `operationId`.
   There is no PascalCase workflow layer here: unlike orders, a proposal transition is
   **one action in one kick**, never a provider-specific request sequence, so the
   workflow/request distinction that [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md)
   needs has nothing to disambiguate.
 - **History actions** — PascalCase, past tense (`ProposalRaised`, `OptionApproved`).
+
+### The namespace: `/v2/proposals`, outside `air`
+
+Proposals live at the **root**, under `/v2/proposals`, and their operations are
+`proposal*` — never `airProposal*`. The rule is normative in
+[NAMING.md](NAMING.md); the short form of it is:
+
+**A proposal is a container an agent fills, and a container is named for the container,
+not for what is put inside it.** An agent attaches air orders as options today because
+air is what the platform sells today. The proposal itself has no provider, no offer and
+no PNR — it has a traveller, a request, a status, an assignee and a history, and every
+one of those reads identically the day the option attached is a hotel, a rail leg or an
+insurance policy. Naming the container after its current contents would bake today's
+product scope into a public URL, in the one place the platform cannot cheaply correct it.
+
+This is the same call already recorded for profiles (*"outside `air`, because no airline
+is involved in creating one"*) and already made for the agency roster, whose
+`/v2/air/agency/agents` is deprecated in favour of `/v2/agency/agents`.
+
+Options are a **sub-resource** of a proposal, so their operations are
+`proposalOptionOffer`, `proposalOptionWithdraw` and `proposalOptionDiscard` — namespace,
+resource, verb last — not `proposalOfferOption`.
 
 ### `Pending` means two different things, and both are correct
 
@@ -120,27 +142,27 @@ title: AirGateway Proposal Status State Machine
 stateDiagram-v2
     direction LR
 
-    [*] --> New:  airProposalCreate (traveller-initiated, unassigned)
-    [*] --> Open: airProposalCreate (agent-raised, or with an assignee)
+    [*] --> New:  proposalCreate (traveller-initiated, unassigned)
+    [*] --> Open: proposalCreate (agent-raised, or with an assignee)
 
-    New  --> Open: airProposalAssign / airProposalOfferOption
-    Open --> New:  airProposalAssign (agent_id null - back to the queue)
-    Open --> Open: airProposalAssign (reassign) / OfferOption / WithdrawOption
+    New  --> Open: proposalAssign / proposalOptionOffer
+    Open --> New:  proposalAssign (agent_id null - back to the queue)
+    Open --> Open: proposalAssign (reassign) / OptionOffer / OptionWithdraw
 
-    Open --> Sent: airProposalSend (needs at least one attached option)
-    Sent --> Sent: airProposalOfferOption / airProposalWithdrawOption
+    Open --> Sent: proposalSend (needs at least one attached option)
+    Sent --> Sent: proposalOptionOffer / proposalOptionWithdraw
 
-    Sent    --> Pending: airProposalApprove (traveller approves 1..n options)
-    Sent    --> Pending: airProposalRequestChanges (traveller wants new options)
-    Pending --> Pending: airProposalOfferOption / airProposalWithdrawOption
-    Pending --> Sent:    airProposalSend (RESEND - only while nothing is Approved)
+    Sent    --> Pending: proposalApprove (traveller approves 1..n options)
+    Sent    --> Pending: proposalRequestChanges (traveller wants new options)
+    Pending --> Pending: proposalOptionOffer / proposalOptionWithdraw
+    Pending --> Sent:    proposalSend (RESEND - only while nothing is Approved)
 
-    Pending --> Confirmed: airProposalConfirm (approved orders issued)
+    Pending --> Confirmed: proposalConfirm (approved orders issued)
 
-    New     --> Cancelled: airProposalCancel
-    Open    --> Cancelled: airProposalCancel
-    Sent    --> Cancelled: airProposalCancel
-    Pending --> Cancelled: airProposalCancel
+    New     --> Cancelled: proposalCancel
+    Open    --> Cancelled: proposalCancel
+    Sent    --> Cancelled: proposalCancel
+    Pending --> Cancelled: proposalCancel
 
     New  --> Expired: expiry sweep
     Open --> Expired: expiry sweep
@@ -171,41 +193,41 @@ with `409 Conflict`.
 
 | From | To | Operation | Actor | History written |
 |---|---|---|---|---|
-| — | `New` | `airProposalCreate` (no assignee) | Traveller | `ProposalRaised` |
-| — | `Open` | `airProposalCreate` (with assignee) | Agent | `ProposalRaised`, `AgentAssigned` |
-| `New` | `Open` | `airProposalAssign` (`agentId` given) | Agent, Admin | `AgentAssigned` |
-| `New` | `Open` | `airProposalOfferOption` — attaching claims it for the acting agent | Agent | `AgentAssigned`, `OptionOffered` |
-| `Open` | `New` | `airProposalAssign` (`agentId` null) | Agent, Admin | `AgentAssigned` |
-| `Open` | `Open` | `airProposalAssign` (different agent) | Agent, Admin | `AgentAssigned` |
-| `Open` | `Open` | `airProposalOfferOption` / `airProposalWithdrawOption` | Agent | `OptionOffered` / `OptionWithdrawn` |
-| `Open` | `Sent` | `airProposalSend` | Agent | `ProposalSent` |
-| `Sent` | `Sent` | `airProposalOfferOption` / `airProposalWithdrawOption` | Agent | `OptionOffered` / `OptionWithdrawn` |
-| `Sent` | `Pending` | `airProposalApprove` | Traveller | `OptionApproved` |
-| `Sent` | `Pending` | `airProposalRequestChanges` | Traveller | `ChangesRequested` |
-| `Pending` | `Pending` | `airProposalOfferOption` / `airProposalWithdrawOption` | Agent | `OptionOffered` / `OptionWithdrawn` |
-| `Pending` | `Sent` | `airProposalSend` (resend) | Agent | `ProposalSent` (`resend: true`) |
-| `Pending` | `Confirmed` | `airProposalConfirm` | Agent | `ProposalConfirmed` |
-| `New` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
-| `Open` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
-| `Sent` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
-| `Pending` | `Cancelled` | `airProposalCancel` | Traveller | `ProposalCancelled` |
+| — | `New` | `proposalCreate` (no assignee) | Traveller | `ProposalRaised` |
+| — | `Open` | `proposalCreate` (with assignee) | Agent | `ProposalRaised`, `AgentAssigned` |
+| `New` | `Open` | `proposalAssign` (`agentId` given) | Agent, Admin | `AgentAssigned` |
+| `New` | `Open` | `proposalOptionOffer` — attaching claims it for the acting agent | Agent | `AgentAssigned`, `OptionOffered` |
+| `Open` | `New` | `proposalAssign` (`agentId` null) | Agent, Admin | `AgentAssigned` |
+| `Open` | `Open` | `proposalAssign` (different agent) | Agent, Admin | `AgentAssigned` |
+| `Open` | `Open` | `proposalOptionOffer` / `proposalOptionWithdraw` | Agent | `OptionOffered` / `OptionWithdrawn` |
+| `Open` | `Sent` | `proposalSend` | Agent | `ProposalSent` |
+| `Sent` | `Sent` | `proposalOptionOffer` / `proposalOptionWithdraw` | Agent | `OptionOffered` / `OptionWithdrawn` |
+| `Sent` | `Pending` | `proposalApprove` | Traveller | `OptionApproved` |
+| `Sent` | `Pending` | `proposalRequestChanges` | Traveller | `ChangesRequested` |
+| `Pending` | `Pending` | `proposalOptionOffer` / `proposalOptionWithdraw` | Agent | `OptionOffered` / `OptionWithdrawn` |
+| `Pending` | `Sent` | `proposalSend` (resend) | Agent | `ProposalSent` (`resend: true`) |
+| `Pending` | `Confirmed` | `proposalConfirm` | Agent | `ProposalConfirmed` |
+| `New` | `Cancelled` | `proposalCancel` | Traveller | `ProposalCancelled` |
+| `Open` | `Cancelled` | `proposalCancel` | Traveller | `ProposalCancelled` |
+| `Sent` | `Cancelled` | `proposalCancel` | Traveller | `ProposalCancelled` |
+| `Pending` | `Cancelled` | `proposalCancel` | Traveller | `ProposalCancelled` |
 | `New` | `Expired` | expiry sweep | System | `ProposalExpired` |
 | `Open` | `Expired` | expiry sweep | System | `ProposalExpired` |
 | `Sent` | `Expired` | expiry sweep | System | `ProposalExpired` |
 
 ### The guards, stated once
 
-- **`airProposalSend` from `Open` requires at least one option in `Offered`.** Sending an
+- **`proposalSend` from `Open` requires at least one option in `Offered`.** Sending an
   empty proposal is not a thing a traveller can review.
-- **`airProposalSend` from `Pending` (resend) is rejected `409` while any option is
+- **`proposalSend` from `Pending` (resend) is rejected `409` while any option is
   `Approved`.** Resending over an approval would silently discard the traveller's
   decision. Withdraw the approved option first, or confirm.
-- **`airProposalConfirm` requires at least one option in `Approved`.** `Confirmed` means
+- **`proposalConfirm` requires at least one option in `Approved`.** `Confirmed` means
   the trip is agreed; nothing else may claim it.
-- **`airProposalApprove` and `airProposalRequestChanges` are the traveller's alone**, and
+- **`proposalApprove` and `proposalRequestChanges` are the traveller's alone**, and
   only from `Sent`. One belonging to another traveller is reported **not found**, never
   forbidden — the two must be indistinguishable to a caller guessing ids.
-- **`airProposalCancel` is the traveller's alone**, from any live status.
+- **`proposalCancel` is the traveller's alone**, from any live status.
 - **Assignment never moves a proposal out of `Sent`, `Pending`, or a terminal status.**
 
 ### Transitions that deliberately do NOT exist
@@ -273,10 +295,10 @@ This is a **change from the earlier single-selection model** and it is load-bear
 
 - The partial unique index that enforced *at most one* `Approved` option per proposal is
   **removed**. The service enforces *at least one* on confirm instead.
-- `airProposalApprove` takes a **list** of option ids, applied in one statement. Every
+- `proposalApprove` takes a **list** of option ids, applied in one statement. Every
   offered sibling not in that list moves to `Rejected` in the same statement, so there is
   never a moment when some options are approved while others are still on offer.
-- Approving is **not** incremental: a second `airProposalApprove` replaces the selection
+- Approving is **not** incremental: a second `proposalApprove` replaces the selection
   wholesale rather than adding to it. Two calls that each approve one option leave one
   approved, not two — which is why the operation takes a list.
 
@@ -284,13 +306,13 @@ This is a **change from the earlier single-selection model** and it is load-bear
 
 | From | To | Cause |
 |---|---|---|
-| — | `Offered` | `airProposalOfferOption` |
-| `Offered` | `Approved` | `airProposalApprove` names this option |
-| `Offered` | `Rejected` | `airProposalApprove` does **not** name this option |
-| `Offered` | `Withdrawn` | `airProposalWithdrawOption` |
-| `Offered` | `Expired` | `airProposalCancel`, the expiry sweep, or the backing order's payment TTL lapsing |
-| `Approved` | `Rejected` | a later `airProposalApprove` drops it from the selection |
-| `Approved` | `Withdrawn` | `airProposalWithdrawOption` — the only way to undo an approval, and it returns the proposal to a resendable state |
+| — | `Offered` | `proposalOptionOffer` |
+| `Offered` | `Approved` | `proposalApprove` names this option |
+| `Offered` | `Rejected` | `proposalApprove` does **not** name this option |
+| `Offered` | `Withdrawn` | `proposalOptionWithdraw` |
+| `Offered` | `Expired` | `proposalCancel`, the expiry sweep, or the backing order's payment TTL lapsing |
+| `Approved` | `Rejected` | a later `proposalApprove` drops it from the selection |
+| `Approved` | `Withdrawn` | `proposalOptionWithdraw` — the only way to undo an approval, and it returns the proposal to a resendable state |
 | `Rejected` | `RejectionFailed` | the cancellation dispatch reports a permanent failure |
 
 ### Rules on attaching an option
@@ -402,4 +424,5 @@ Deliberate, tracked, and never precedent.
 | **The expiry sweep is not implemented.** `Expired` is declared, seeded and mirrored everywhere, and the transitions above are normative — but nothing yet moves a proposal into it. It will follow the `/agw/orders/status/expire` precedent: a cross-tenant scheduler-driven `POST` deriving the outstanding set from current state on every run, which makes the sweep itself the retry. | Open |
 | **An agency cannot dispose of a request it will not serve.** The only exits for an unwanted request are the clock and the traveller cancelling, so *the agency declined this* is not recordable and "how often did we turn work away?" cannot be answered apart from "how often did customers say no?". An agency-side terminal status is the fix if that question is ever asked. | Open |
 | **None of this machine is implemented.** Every layer named in the layer contract carries an older, different status set and must be migrated to this one. | Open |
-| **BookingPad cannot raise a proposal or attach an order to one.** `airProposalCreate` and `airProposalOfferOption` exist on AGW API V2; BookingPad has no UI for either, so the agent-side entry point does not exist in the product. | Open |
+| **The operation names in this file are not the ones AGW API V2 ships.** This file names transitions `proposalSend`, `proposalApprove`, `proposalRequestChanges` and `proposalCancel`; the spec today ships `proposalAccept`, `proposalDecline`, `proposalClose` and `proposalMessage`, and has no send/approve pair at all. The *namespace and prefix* are settled by [NAMING.md](NAMING.md) and this file is now correct on both; the *verb set* is not yet reconciled, and reconciling it is a behaviour question — which operations exist — not a naming one. Until it is closed, do not read an operation name here as proof the operation exists. | Open |
+| **BookingPad cannot raise a proposal or attach an order to one.** `proposalCreate` and `proposalOptionOffer` exist on AGW API V2; BookingPad has no UI for either, so the agent-side entry point does not exist in the product. | Open |
