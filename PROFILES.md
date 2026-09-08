@@ -261,11 +261,12 @@ table is invalid** and MUST be rejected with `409 Conflict`.
 | — | `Provisional` | `profileTravellerResolve` | Address nobody held. Identity taken from the passenger or request payload. |
 | — | `Active` | `profileTravellerCreate` | An agent asserting a profile. Rejected `422` if `email`, `name` or `surname` is absent. |
 | — | `Active` | `profileTravellerImport` | CSV roster. Rows failing the `Active` invariant land `Provisional` rather than failing the import. |
+| `Provisional` | `Active` | `profileTravellerImport` | A re-import that matches an existing `Provisional` row promotes it: an import is the agency asserting its roster, which is the review the row was waiting for. An `Active` or `Inactive` row is left where an agent placed it. |
 | `Provisional` | `Active` | `profileTravellerUpdate` | Explicitly, or implicitly on the first agent edit that satisfies the invariant. |
 | `Provisional` | `Inactive` | `profileTravellerUpdate` | A minted profile the agency does not want offered but cannot delete. |
 | `Active` | `Inactive` | `profileTravellerUpdate` | |
 | `Inactive` | `Active` | `profileTravellerUpdate` | Deliberate reactivation. |
-| `Inactive` | `Active` | `profileTravellerResolve` | Automatic — they are on a new booking or request. |
+| `Inactive` | `Active` | `profileTravellerResolve` | Automatic — they are on a new booking or request. Only when the profile satisfies the `Active` invariant; an `Inactive` profile missing a name or surname is left exactly as the agent placed it, because resolution must not put a profile into a status it cannot satisfy. |
 | — | `Active` | `profileCompanyCreate` | Companies are created live. |
 | `Active` | `Inactive` | `profileCompanyUpdate` | |
 | `Inactive` | `Active` | `profileCompanyUpdate` | |
@@ -279,6 +280,9 @@ table is invalid** and MUST be rejected with `409 Conflict`.
 - **Nothing auto-`Inactive`s.** No sweep, no inactivity clock. A profile going quiet is
   not the same as an agency deciding to withdraw it, and guessing produces a roster that
   silently loses people.
+- **Nothing is created `Inactive`.** A profile is created live — `Active`, or `Provisional`
+  — and withdrawn afterwards. A create naming `Inactive` is a `422`, for travellers and
+  companies alike.
 
 ## Associations — the normative table
 
@@ -340,6 +344,9 @@ Each row says who enforces it and what a violation returns.
 | `birthdate` and `documents[].expirationDate` ISO 8601 `YYYY-MM-DD` | `422` | AGW API V2 |
 | Target profile outside the calling agency | `404` | hub, in SQL |
 | Any transition absent from the table above | `409` | hub |
+| A status outside the declared set | `422` | hub, at the request boundary (enum) and again by the FK on the taxonomy table |
+| Delete a traveller a proposal still names | `409` | hub, mapping `proposals_traveler_id_fkey` |
+| Delete a company that still holds travellers | `409` | hub, mapping `travelers_company_id_fkey` |
 
 **`email` is optional in the data model and required on create.** Both are correct: rows
 predating this spec, and rows from CSV imports, legitimately carry no address, and the
@@ -377,10 +384,12 @@ Where deletion is genuinely wanted, two conflicts are real and MUST be reported 
 | Delete a traveller referenced by any proposal | `409` — naming the proposal |
 | Delete a company that still holds travellers | `409` — naming the count |
 
-Both are `ON DELETE RESTRICT` at the database, so the constraint is already enforced.
-What is missing is the mapping: the violation currently surfaces as an untyped `500`.
-A `409` with a message an agent can act on is required before delete is exposed to
-anybody. See *Known gaps*.
+Both are `ON DELETE RESTRICT` at the database, and both violations are mapped to a `409`
+whose detail says what to do instead (deactivate the traveller; move or delete the roster,
+or deactivate the company). Delete answers `204`. Shipped in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42).
+
+The company message does not literally carry the count; the roster size is on every
+company row as `travellerCount` precisely so a client can say it before trying.
 
 ## The layer contract
 
@@ -392,7 +401,7 @@ on demand.
 | Layer | Where the names live | Rule |
 |---|---|---|
 | **hub-api-v2** | `domain/traveler.go`, `domain/company.go` | The single place the taxonomy is edited. Guards use the declared constants, never a string literal. |
-| **hub persistence** | `travelers.status`, `companies.status` and their taxonomy tables | FK-enforced. Requires a migration — neither column exists today. |
+| **hub persistence** | `public.travelers.status`, `public.companies.status`, referencing `public.traveler_statuses` and `public.company_statuses` | FK-enforced. Migration `20260908081918_profiles_add_status` ([hub#42](https://github.com/AirGateway/hub-api-v2/pull/42)). Travellers were backfilled by the `Active` invariant; companies to `Active`. |
 | **hub tests** | `testdata/database/seeds/` | The harness does **not** run start-up reconciliation, so a new status needs a matching seed row or every test touching it fails. |
 | **agw-api-v2** | the `status` enums in `specs/ndcjsonapiv2.openapi.yaml` under `/v2/profiles` | Mirrors hub's sets. Never writes one hub does not declare. |
 | **BookingPad** | `features/profiles/models/` | Mirrors hub's sets. Replaces the current boolean `active` on both profile models. Labels may differ from stored values; stored values may not. |
@@ -420,19 +429,19 @@ of guessing. Where hub already has a route, it is marked as such and must not ch
 | `GET /agw/travellers/by-email` | **Exists** | Traveller-scoped requests. Not used by `/v2/profiles` |
 | `POST /agw/travellers/resolve` | **Exists** | Booking → profile linking. Not used by `/v2/profiles` |
 | `GET /agw/travellers` | **Exists** — shipped in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29) | Traveller list, and BookingPad's traveller predictive search |
-| `POST /agw/travellers` | **MISSING** | Add a traveller |
-| `PATCH /agw/travellers/{id}` | **MISSING** | Edit a traveller |
-| `DELETE /agw/travellers/{id}` | **MISSING** | Remove a traveller — blocked anyway, see Known gaps |
+| `POST /agw/travellers` | **Exists** — [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40) | Add a traveller |
+| `PATCH /agw/travellers/{id}` | **Exists** — [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40); `status` honoured since [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Edit, deactivate, reactivate a traveller |
+| `DELETE /agw/travellers/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Remove a traveller. `409` while a proposal names them |
 | `GET /agw/companies` | **Exists** — shipped in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29) | Company list, and BookingPad's company predictive search |
 | `GET /agw/companies/{id}` | **Exists** — shipped in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29) | Company detail |
-| `POST /agw/companies` | **MISSING** | Add a company |
-| `PATCH /agw/companies/{id}` | **MISSING** | Edit a company |
-| `DELETE /agw/companies/{id}` | **MISSING** | Remove a company — blocked anyway, see Known gaps |
+| `POST /agw/companies` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Add a company. The consumer is derived from `agency_id`, never taken from the caller |
+| `PATCH /agw/companies/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Edit, deactivate, reactivate a company |
+| `DELETE /agw/companies/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Remove a company. `409` while it holds travellers |
 
-**The two listings were the priority, and they have landed.** They are what a picker
-needs, they are pure reads, and they were the only two blocking a booking from being
-snapped to a profile at all. What remains missing is the writes, which block only the
-Profiles management screen — not the predictive search, and not a booking.
+**Every route in the inventory exists.** The listings landed first (they are what a
+picker needs); the traveller writes followed; the status column, the company writes and
+both deletes landed together in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). Nothing under `/v2/profiles` calls a route hub
+does not serve.
 
 ### Rules that hold for every route
 
@@ -449,7 +458,12 @@ Profiles management screen — not the predictive search, and not a booking.
   inexpressible (see Known gaps).
 - **Envelopes are hub's own.** A single item is `{"data": {…}}`. A listing is
   `{"data": [ … ], "metadata": {"current_page", "page_size", "total_pages",
-  "total_records"}}`. A `DELETE` answers `204` with no body.
+  "total_records"}}`. A `DELETE` answers `204` with no body. A company row carries
+  `traveler_count` on the agency-scoped reads.
+- **An array query parameter is one comma-separated key**, `status=Provisional,Active`,
+  because that is how hub's Huma router reads it. Repeating the key makes Huma read only
+  the first value, which silently narrows a two-status filter to one. agw-api-v2 encodes it
+  that way ([agw-api-v2#75](https://github.com/AirGateway/agw-api-v2/pull/75)).
 - **Bodies are snake_case**, matching hub's existing conventions and its
   `responses.Traveler` / `responses.Company` shapes.
 - **`PATCH` is absent-means-untouched.** A key that is not present is not edited; a key
@@ -469,19 +483,26 @@ Both listings take `page` and `limit` (**`limit`, not `pageSize`** — hub's own
 | `email` | Match on email |
 | `name` | Match on first name |
 | `surname` | Match on surname |
-| `status` | Repeatable. Deferred with the status column — see below |
+| `status` | Comma-separated. Applied in SQL before the page is counted and sliced |
 
-`GET /agw/companies` additionally takes `name` (match on name) and the same repeatable
+`GET /agw/companies` additionally takes `name` (match on name) and the same comma-separated
 `status`.
 
 `name`, `surname` and `email` back a **predictive search**, so they MUST be
 case-insensitive partial matches, not equality. This is the one place where getting the
 matching semantics wrong still returns `200` and simply looks broken to an agent.
 
-### The two listings can ship before the `status` column
+### The two listings shipped before the `status` column (historical, kept for the rule it taught)
 
-`status` is normative in this document but no column exists yet, and **the read routes
-do not have to wait for it.** agw-api-v2 already derives a traveller's status when hub
+**Superseded by [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) and [agw-api-v2#75](https://github.com/AirGateway/agw-api-v2/pull/75):** hub filters `status` in SQL and
+agw-api-v2 forwards it. One thing survives from this section as live behaviour — because
+the two services deploy independently, agw-api-v2 **retries a listing without `status`
+when hub answers a `422` to it**, and applies the filter locally against the derived
+status, exactly as below. That makes the deploy order irrelevant, which is the lesson of
+this whole section.
+
+`status` was normative in this document before the column existed, and **the read routes
+did not have to wait for it.** agw-api-v2 already derives a traveller's status when hub
 sends none — complete → `Active`, otherwise `Provisional` — and defaults a company's to
 `Active`, so a listing that omits `status` entirely is decoded correctly.
 
@@ -559,15 +580,15 @@ Deliberate, tracked, and never precedent.
 
 | Gap | Status |
 |---|---|
-| **Neither `status` column exists.** `public.travelers` and `public.companies` have no status column and no taxonomy table. Every status in this document is normative but unimplemented; BookingPad's profile models currently carry a boolean `active` instead, and the migration must map existing rows — a row satisfying the `Active` invariant becomes `Active`, everything else becomes `Provisional`. | Open |
+| **Neither `status` column existed.** `public.travelers` and `public.companies` had no status column and no taxonomy table, so every status in this document was normative but unimplemented and agw-api-v2 derived one on read. Closed by [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42): both columns, both taxonomy tables reconciled from `domain.TravelerStatuses` / `domain.CompanyStatuses` at start-up, existing travellers backfilled by the `Active` invariant and companies to `Active`. | Closed |
 | **`frequentFlyerNumbers[].alliance` is wrong and must become `airlineCode`.** A booking's `fqtvInfo` names a carrier (`airlineId: JU`) and an account number; an alliance cannot be sent to an airline, so the stored field cannot populate the booking field it exists for. Needs a migration in hub and a corresponding change on the Air surface. | Open |
-| **Delete returns `500`, not `409`.** Hub's traveller and company deletes wrap the FK violation and return it untyped, so deleting a traveller with a proposal — or a company with travellers — reaches the agent as an internal error. Delete MUST NOT be exposed on `/v2/profiles` until this is mapped. | Open |
-| **`/agw/travellers/{id}` applies no tenancy check.** It reads by id with no agency scope. Acceptable while its only callers are proposal hydration and booking links; a hard blocker for a public endpoint. | Open |
-| **An agency-wide traveller list is not expressible.** `travelers.List` filters on `company_id` and `email` only, with no join to `companies.agency_id`, so "every traveller my agency can see" cannot be asked. | Open |
+| **Delete returned `500`, not `409`.** Hub's traveller delete wrapped the `proposals_traveler_id_fkey` violation untyped. Closed by [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42): both `/agw` deletes exist, both violations are `409`s that say to deactivate instead, and `/v2/profiles` delete is live. | Closed |
+| **`/agw/travellers/{id}` applied no tenancy check.** It read by id with no agency scope. Closed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29): `agency_id` is applied as a SQL predicate when given, and every `/v2/profiles` call gives it. The unscoped read remains for the internal callers only. | Closed |
+| **An agency-wide traveller list was not expressible.** Closed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29): `GET /agw/travellers` joins `travelers.company_id → companies.agency_id`. | Closed |
 | **`travellerCode` has no uniqueness index.** The rule is normative above; the index does not exist. | Open |
 | **`gender`, `title` and `documentType` are unpinned on the Air surface**, and inconsistent within its own spec. Profiles defer to whatever that surface accepts until a separate PR pins them. | Open |
 | **The profile predictive search was broken in BookingPad, and this was why.** `/v2/profiles` shipped on AGW API V2 ([agw-api-v2#61](https://github.com/AirGateway/agw-api-v2/pull/61)) against hub routes that did not exist: `GET /agw/travellers` (list) and every `/agw/companies` route. An unrouted call falls through to Go's `ServeMux`, which answers a bare `404 page not found`, so an agent saw **"Profile not found."** on every keystroke. Closed by [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), which serves both listings. | Closed |
 | **A `404` from a missing route used to be indistinguishable from a missing profile.** Any `404` mapped to `AGW_profile_not_found`, whose detail is "Profile not found." — a plausible business answer for a routing failure, which sent everyone looking at data instead of at hub's routing table. [agw-api-v2#63](https://github.com/AirGateway/agw-api-v2/pull/63) now treats a `404` with no readable error body as a `500` naming the route. It makes the failure honest; it does not make the search work. | Fixed in agw-api-v2, root cause open |
 | **agw-api-v2 sent hub the `status` filter hub is required to refuse.** The rejection clause above was written as hub's obligation alone, so hub returned the mandated `422` while agw kept forwarding the parameter — and agw's service layer *substitutes* a default (`[Active]`, or `[Provisional, Active]`) when a caller names no status, so every company and traveller listing carried one. Both listings failed 100% of the time, including BookingPad's Company picker opened with an empty search box. Compounded by the `422` mapping: it reached agents as "This profile is missing a field it needs." Closed by [agw-api-v2#66](https://github.com/AirGateway/agw-api-v2/pull/66) — agw omits `status` and filters on the derived status itself. The corollary is now normative above. | Fixed |
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
-| **The profile WRITES are still missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The Profiles management screen needs them; the predictive search and the booking snap do not. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29). | Open |
+| **The profile WRITES were missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), the traveller create and update in [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40), and the company writes, both deletes and the status writes in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). | Closed |
