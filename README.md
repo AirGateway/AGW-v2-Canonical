@@ -1,13 +1,15 @@
 # AGW Platform — Canonical Specs
 
-This repository holds the **single source of truth** for five platform-wide
+This repository holds the **single source of truth** for six platform-wide
 contracts: order **states, workflows, and events**, proposal **statuses and
 transitions**, the **traveller and company profiles** an agency curates, the
-**identifier policy** governing every id the API returns, and the **namespace
-and naming policy** governing what the API calls things in the first place.
+**identifier policy** governing every id the API returns, the **namespace
+and naming policy** governing what the API calls things in the first place, and
+the **presentation policy** governing how a front end puts an item in front of an
+agent.
 
 Each spec is normative on its own terms. Together they define what the platform
-calls things and what it is allowed to do to them.
+calls things, what it is allowed to do to them, and how an agent sees them.
 
 ## [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md) — order lifecycle
 
@@ -120,6 +122,28 @@ calls things and what it is allowed to do to them.
   is.
 - **Known non-conformance** — deliberate, tracked exceptions, never precedent.
 
+## [PRESENTATION.md](PRESENTATION.md) — how a front end shows an item
+
+- The rule: **an item is presented as a pair** — the identifier it is known by, plus
+  one navigation affordance. A **link** where the item has a page of its own, a
+  **hover** where it has an identity worth revealing but nowhere to go. Never one
+  without the other.
+- The **table**: an **order** shows its AGW order id and links to `/orders/:orderId`
+  in BookingPad; a **user** shows its AGW user id and reveals the person on hover; a
+  **proposal** shows its proposal id and links to `/proposals/:proposalId`. The table
+  is deliberately open — more items are expected.
+- The practice rules that follow: the id **is** the visible text and stays copyable,
+  a link is a **real anchor** (⌘-click and "copy link address" must work), a link is
+  **unconditional**, a hover must also reach the accessible name because touch and
+  keyboard have no hover, and the pair does not change between list, detail and
+  dialog.
+- **Adding an item**: one row, the affordance picked from what exists today, spec and
+  front end in the same PR.
+- The **layer contract** binding BookingPad web, the Expo app and the traveller app
+  to the same pairs — and forbidding a front end from prettifying an id to show it.
+- **Known non-conformance** — today a user's hover shows an **email**, because no
+  agent has a name anywhere on the platform.
+
 ## Rules of engagement
 
 - All platform layers MUST conform to the exact names, namespaces, transitions,
@@ -132,3 +156,5 @@ calls things and what it is allowed to do to them.
   lifecycle spec supersedes the retired skill `agw-v2-order-status-lifecycle`.
 - The order and proposal machines are **independent**. Read them together for
   display; never let one drive the other.
+- A screen that shows an item shows it the way [PRESENTATION.md](PRESENTATION.md)
+  says, in every surface that mentions it.
