@@ -107,6 +107,7 @@ A person the agency books for. Belongs to exactly one company.
 | `frequentFlyerNumbers[]` | FrequentFlyer | no | Shape is normative below. |
 | `travellerCode` | string | no | The agency's or corporate's own code for this person. Unique per company where present. |
 | `homebase` | string(3) | no | IATA airport or city code, uppercase. The person's home departure point. |
+| `proposalCount` | integer | **derived**, read-only | How many proposals name this traveller. Not a column: computed alongside the row on the agency-scoped reads (`GET /agw/travellers`, `GET /agw/travellers/{id}?agency_id=`), zero elsewhere. A traveller named on any proposal cannot be deleted (`RESTRICT`), so a client says so before trying — see *Deletion*. |
 | `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
 
 **Document** — the shape is **exactly the booking passenger document**, field for field,
@@ -148,6 +149,7 @@ traveller has one; there is no such thing as a company-less profile.
 | `discountCodes` | map | no | Negotiated codes, keyed by airline. |
 | `loyaltyProgramDiscountCodes` | map | no | As above, for loyalty programmes. |
 | `customFields` | map | no | Agency-defined key/value pairs. |
+| `travellerCount` | integer | **derived**, read-only | How many travellers are on this company's roster. Not a column: computed alongside the row on the agency-scoped reads, zero elsewhere. A company still holding travellers cannot be deleted (`RESTRICT`), so a client says so before trying — see *Deletion*. Shipped in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). |
 | `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
 
 Remarks are **not** a company field. They are definitions in `public.remarks` attached
@@ -388,8 +390,15 @@ Both are `ON DELETE RESTRICT` at the database, and both violations are mapped to
 whose detail says what to do instead (deactivate the traveller; move or delete the roster,
 or deactivate the company). Delete answers `204`. Shipped in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42).
 
-The company message does not literally carry the count; the roster size is on every
-company row as `travellerCount` precisely so a client can say it before trying.
+Neither message literally carries a count. The counts ride on the rows instead — the
+roster size on every company as `travellerCount`, the number of proposals naming a person
+on every traveller as `proposalCount` — precisely so a client can say it **before** trying.
+
+**A client that knows the count MUST not offer the delete.** BookingPad greys "Delete
+permanently" on a company whose `travellerCount` is not zero and on a traveller whose
+`proposalCount` is not zero, and quotes the count back if the action is reached anyway.
+Letting an agent confirm a deletion the API is guaranteed to refuse is a worse refusal
+than a greyed item with the reason on it. The `409` stays as the backstop for a stale row.
 
 ## The layer contract
 
