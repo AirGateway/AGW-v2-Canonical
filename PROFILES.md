@@ -153,8 +153,60 @@ traveller has one; there is no such thing as a company-less profile.
 | `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
 
 Remarks are **not** a company field. They are definitions in `public.remarks` attached
-through `public.company_remarks`; the legacy `companies.remarks` array is deprecated and
-MUST NOT be read or written by any new code.
+through `public.company_remarks`, read and written as a sub-resource of the company —
+see *Company remark templates* below. The legacy `companies.remarks` array is deprecated
+and MUST NOT be read or written by any new code.
+
+### Company remark templates
+
+The texts an agent fills in at booking time so the PNR carries the corporate's cost
+centre, project code or account reference. A company holds a **list** of them; an order
+carries **at most one** company remark, picked from that list — exactly as agency remarks
+work, with the agency's own list.
+
+They live under the company, not under `/v2/agency`: NAMING.md places *the agency's*
+remark templates under `/v2/agency` because they are agency configuration, identical for
+every corporate; a company's templates are attached to that company, travel with it, and
+are gone when it is. The container is named for the container.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | UUID | issued | The `public.remarks` primary key, plain — not a minted handle, see [IDS.md](IDS.md). |
+| `name` | string(255) | **yes** | Non-empty. What an agent picks from the list. Trimmed. |
+| `template` | string | no | The `{placeholder:type}` text, **stored verbatim** — its placeholders and line breaks ARE the remark. Empty is a legitimate configured state (a name-only placeholder), so it is always returned, as `""`. Cleared with `""`, never `null`. |
+| `neededOnCreation` | boolean | no, default `false` | The one template an agent must fill in before an order for this company can be created. **At most one per company**, enforced by hub with a partial unique index. |
+| `position` | integer | no, default `0` | Display order within the company's list. Surfaced here — unlike on the agency template listing — because this surface edits the list, and an editor that cannot see the order cannot change it. |
+| `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
+
+| Operation | Path | What it does |
+|---|---|---|
+| `profileCompanyRemarkList` | `GET /v2/profiles/companies/{id}/remarks` | Every template on the company, the `neededOnCreation` one first, then `position`, then name. **Not paged**: a company holds a handful and the order form needs all of them at once. A company with none answers an empty list. |
+| `profileCompanyRemarkCreate` | `POST /v2/profiles/companies/{id}/remarks` | Adds a template. Only `name` is required. |
+| `profileCompanyRemarkRetrieve` | `GET /v2/profiles/companies/{id}/remarks/{remarkId}` | One template as configured on the company. |
+| `profileCompanyRemarkUpdate` | `PATCH /v2/profiles/companies/{id}/remarks/{remarkId}` | Sparse edit; nothing is nullable. Clearing `name` is refused (`422`) for the same reason a company's is. |
+| `profileCompanyRemarkDelete` | `DELETE /v2/profiles/companies/{id}/remarks/{remarkId}` | Detaches the template; hub drops the definition once nothing links to it. Orders already filled in from it keep their own copy of the text. `204`. |
+
+Rules, all of which hold on hub's `/agw/companies/{company_id}/remarks` as well:
+
+- **A company of another agency is a `404`, never a `403`** — and never an empty list.
+  A remark attached to a *different* company is a `404` through this one too, so a
+  template cannot be read or edited through a company that does not own it.
+- **A second `neededOnCreation` template is a `409`**, `AGW_profile_remark_mandatory_taken`.
+  It is a conflict with another template's state, not a broken payload: the fix is to
+  release the current one first. Hub answers it as a `422` with a detail naming the
+  rule; agw-api-v2 is the layer that turns that into the `409`, and MUST NOT report it
+  as `AGW_profile_incomplete`.
+- **A client that knows the rule enforces it before the attempt**: a form marking a
+  template required is disabled while another one holds the flag, and the row action
+  offered is the one legal move (require an optional one, release the required one).
+  The `409` stays as the backstop.
+- **On the order**: `companyRemarks.id` MUST be one of the booked company's templates,
+  and `companyRemarks` MUST NOT be sent without `companyID`. When the company has a
+  `neededOnCreation` template, that one MUST be the remark sent. These are the Air
+  surface's rules, restated so a profiles client knows what its list is for.
+- **The order does not name its company on retrieve**, so an order's stored company
+  remark cannot be matched back to a template name; it is shown and edited from its own
+  stored `template`. Naming the company on the order is tracked separately.
 
 ## The 3 traveller statuses
 
@@ -446,11 +498,18 @@ of guessing. Where hub already has a route, it is marked as such and must not ch
 | `POST /agw/companies` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Add a company. The consumer is derived from `agency_id`, never taken from the caller |
 | `PATCH /agw/companies/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Edit, deactivate, reactivate a company |
 | `DELETE /agw/companies/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Remove a company. `409` while it holds travellers |
+| `GET /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | The company's remark templates, mandatory first. Unpaged. `404` for a foreign company, never an empty list |
+| `POST /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Add a template. `422` `MsgRemarkNeededOnCreationTaken` for a second mandatory one |
+| `GET /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | One template. `404` for a remark attached to another company |
+| `PATCH /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Sparse edit of name, template, flag, position |
+| `DELETE /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Detach; orphaned definition deleted. `204` |
 
 **Every route in the inventory exists.** The listings landed first (they are what a
 picker needs); the traveller writes followed; the status column, the company writes and
-both deletes landed together in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). Nothing under `/v2/profiles` calls a route hub
-does not serve.
+both deletes landed together in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42); the company remark templates in
+[hub#49](https://github.com/AirGateway/hub-api-v2/pull/49). Nothing under `/v2/profiles` calls a route hub
+does not serve. The admin console's `/admin/companies/{company_id}/remarks` is the same
+service behind a different door and is not scoped by agency; `/v2` never calls it.
 
 ### Rules that hold for every route
 
@@ -616,4 +675,5 @@ Deliberate, tracked, and never precedent.
 | **agw-api-v2 sent hub the `status` filter hub is required to refuse.** The rejection clause above was written as hub's obligation alone, so hub returned the mandated `422` while agw kept forwarding the parameter — and agw's service layer *substitutes* a default (`[Active]`, or `[Provisional, Active]`) when a caller names no status, so every company and traveller listing carried one. Both listings failed 100% of the time, including BookingPad's Company picker opened with an empty search box. Compounded by the `422` mapping: it reached agents as "This profile is missing a field it needs." Closed by [agw-api-v2#66](https://github.com/AirGateway/agw-api-v2/pull/66) — agw omits `status` and filters on the derived status itself. The corollary is now normative above. | Fixed |
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
 | **The profile WRITES were missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), the traveller create and update in [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40), and the company writes, both deletes and the status writes in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). | Closed |
+| **BookingPad's company remarks were a mock, and the Remarks tab rendered nothing.** The order form's "Company remarks" section was filled from a hardcoded template served outside production (`company-remark-template.mock.ts`), so every dev booking carried a company remark whose id matched nothing in hub, and the templates an agency configured for a corporate — through the admin console only — never reached the agent booking for it. Closed by exposing the templates as a sub-resource of the company through all three layers: [hub-api-v2#49](https://github.com/AirGateway/hub-api-v2/pull/49) (`/agw/companies/{company_id}/remarks`, agency-scoped), [agw-api-v2#85](https://github.com/AirGateway/agw-api-v2/pull/85) (`/v2/profiles/companies/{id}/remarks`, the `409` for a second mandatory template), [bookingpad-app-v2#45](https://github.com/AirGateway/bookingpad-app-v2/pull/45) (Remarks tab with add / edit / require / delete, per-company templates in the booking flow, mock deleted). Deploy order is hub → agw → BookingPad: an agw build without the route reports a bare `404` as "route not implemented" (`500`), never as a missing profile. | Closed |
 | **The roster search on BookingPad's Profiles screen matched almost nobody.** The screen has one box and sent its term as `name`, `surname` and `email` at once; agw-api-v2 forwarded all three; hub AND-s them in SQL. Searching "Alex" therefore required a surname containing "alex". Nothing returned an error — `200` and an empty table, which reads as "we hold nobody by that name". The predictive search on the passenger form was unaffected, because it sends one field at a time. Closed by adding `search` — OR-ed across name, surname, email and traveller code, AND-ed with everything else — through all three layers: [hub-api-v2#46](https://github.com/AirGateway/hub-api-v2/pull/46), [agw-api-v2#81](https://github.com/AirGateway/agw-api-v2/pull/81), [bookingpad-app-v2#39](https://github.com/AirGateway/bookingpad-app-v2/pull/39). Deploy order is hub → agw → BookingPad: a layer that does not yet know `search` ignores it and answers an unfiltered `200`, which is the wrong-answer failure this file already forbids for `status`. | Closed |

@@ -25,7 +25,7 @@ namespace**. Today that is:
 | `/v2/air` | shopping, offers, orders, order servicing | an airline is party to every one |
 | `/v2/proposals` | proposals and the options attached to them | a container an agent fills; no airline is party to raising one |
 | `/v2/profiles` | travellers, companies | a roster the agency curates; no airline is involved in creating one |
-| `/v2/agency` | the agency's own agents, presets, remark templates | agency configuration; identical whoever the provider is |
+| `/v2/agency` | the agency's own agents, presets, the agency's remark templates | agency configuration; identical whoever the provider is. A *company's* remark templates are attached to the company and live under `/v2/profiles/companies/{id}/remarks` — see [PROFILES.md](PROFILES.md) |
 
 ### A container is named for the container, not for what is put inside it
 
