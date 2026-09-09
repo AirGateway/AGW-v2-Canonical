@@ -108,6 +108,7 @@ A person the agency books for. Belongs to exactly one company.
 | `travellerCode` | string | no | The agency's or corporate's own code for this person. Unique per company where present. |
 | `homebase` | string(3) | no | IATA airport or city code, uppercase. The person's home departure point. |
 | `proposalCount` | integer | **derived**, read-only | How many proposals name this traveller. Not a column: computed alongside the row on the agency-scoped reads (`GET /agw/travellers`, `GET /agw/travellers/{id}?agency_id=`), zero elsewhere. A traveller named on any proposal cannot be deleted (`RESTRICT`), so a client says so before trying — see *Deletion*. |
+| `firstOrderId` | string | **derived**, read-only | The AGW id of the earliest order whose passenger links to this profile; absent when none does. Not a column: computed alongside the row on the agency-scoped reads (hub `first_order_agw_id`). For a `Provisional` profile it is **where it came from** — the booking the platform minted it for — which a reviewer looks at before deciding; for any profile, the person's first booking. Shipped in [hub#53](https://github.com/AirGateway/hub-api-v2/pull/53) / [agw-api-v2#89](https://github.com/AirGateway/agw-api-v2/pull/89). |
 | `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
 
 **Document** — the shape is **exactly the booking passenger document**, field for field,
@@ -240,6 +241,24 @@ the agency reviews the profile and it becomes `Active`.
   load-bearing rather than advisory.
 - **`Provisional` is not "invalid".** The person is real and their address is real; they
   are bookable, listable and selectable. They are merely unvouched-for.
+- **`Provisional` is a queue, and the queue is visible.** `profileTravellerList` carries
+  `totalByStatus` — how many of the agency's travellers sit in each status, *unaffected by the
+  page's filters*, the same contract the proposals inbox has — so a roster can say
+  "Needs review (4)" whatever page is open. Each Provisional row carries `firstOrderId`, the
+  booking it was minted for. **Reviewing is `profileTravellerUpdate`**: `status: Active` on a
+  profile that already carries email, name and surname; on one that does not, the form, which
+  asks for what is missing and promotes on save (the API promotes a completed Provisional profile
+  on any edit). Nothing else "marks reviewed" — there is no separate operation, because there
+  is nothing separate to record.
+- **"Save to roster" at booking is the same promotion, earlier.** A booking made for a company
+  has already minted the Provisional profile for each unknown passenger by the time the order
+  exists (`passengers[].travellerId` says which). An agent ticking "Save to ⟨Company⟩ roster"
+  on a passenger is vouching for them: the client promotes that profile with
+  `profileTravellerUpdate` — `status: Active` plus everything the passenger form captured
+  (documents, phone, address, frequent flyer), so nothing typed for the booking evaporates. A
+  profile already `Active` is left exactly as the agency curated it; a passenger with no email
+  has no profile and is reported, not invented. The option exists only when the booking names a
+  company — that is what the minted profile is filed under.
 
 **`Active`** is a claim about completeness, not merely a flag. A profile may only be
 `Active` when it carries an `email`, a `name` and a `surname` — the three fields without
@@ -615,6 +634,11 @@ Both listings take `page` and `limit` (**`limit`, not `pageSize`** — hub's own
 | `search` | **One term matched against `name`, `surname`, `email` and `traveler_code` at once — OR-ed across them.** The only OR on the surface. AND-ed with every other parameter |
 | `status` | Comma-separated. Applied in SQL before the page is counted and sliced |
 
+`GET /agw/travellers`' metadata carries **`total_by_status`** — every declared status present, zero
+included, counted over the agency (or the one traveller the request came in as) and *unaffected
+by the filters*; shipped in [hub#53](https://github.com/AirGateway/hub-api-v2/pull/53). A hub build
+that does not count omits it, and agw-api-v2 then omits `totalByStatus` rather than sending zeros.
+
 `GET /agw/companies` additionally takes `name` (match on name), `domain` (**exact**, case-insensitive
 match on a claimed email domain — at most one row, since a domain belongs to one company; shipped in
 [hub#52](https://github.com/AirGateway/hub-api-v2/pull/52)) and the same comma-separated
@@ -739,6 +763,8 @@ Deliberate, tracked, and never precedent.
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
 | **The profile WRITES were missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), the traveller create and update in [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40), and the company writes, both deletes and the status writes in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). | Closed |
 | **BookingPad's company remarks were a mock, and the Remarks tab rendered nothing.** The order form's "Company remarks" section was filled from a hardcoded template served outside production (`company-remark-template.mock.ts`), so every dev booking carried a company remark whose id matched nothing in hub, and the templates an agency configured for a corporate — through the admin console only — never reached the agent booking for it. Closed by exposing the templates as a sub-resource of the company through all three layers: [hub-api-v2#49](https://github.com/AirGateway/hub-api-v2/pull/49) (`/agw/companies/{company_id}/remarks`, agency-scoped), [agw-api-v2#85](https://github.com/AirGateway/agw-api-v2/pull/85) (`/v2/profiles/companies/{id}/remarks`, the `409` for a second mandatory template), [bookingpad-app-v2#45](https://github.com/AirGateway/bookingpad-app-v2/pull/45) (Remarks tab with add / edit / require / delete, per-company templates in the booking flow, mock deleted). Deploy order is hub → agw → BookingPad: an agw build without the route reports a bare `404` as "route not implemented" (`500`), never as a missing profile. | Closed |
+| **Provisional profiles appeared by magic, and there was no queue.** Every booking with an unknown address minted one; no listing said how many awaited review, no row said where one came from, and reviewing meant opening the form and saving. Closed by `totalByStatus` on the listing and `firstOrderId` on the row ([hub-api-v2#53](https://github.com/AirGateway/hub-api-v2/pull/53), [agw-api-v2#89](https://github.com/AirGateway/agw-api-v2/pull/89)) and BookingPad's status chips with counts, "Mark as reviewed" and the source-booking link ([bookingpad-app-v2#49](https://github.com/AirGateway/bookingpad-app-v2/pull/49)). | Closed |
+| **Nothing the agent typed for a passenger reached the roster.** A full passenger with passport and phone was booked and then evaporated; the minted Provisional profile carried only what resolve took (name, address). Closed by "Save to ⟨Company⟩ roster" on the reservation step ([bookingpad-app-v2#49](https://github.com/AirGateway/bookingpad-app-v2/pull/49)): the minted profile is promoted to `Active` with the passenger's data once the order exists. No API change: `passengers[].travellerId` (agw-api-v2#87) and `profileTravellerUpdate` were enough. | Closed |
 | **Domains were stored, labelled "Verified", and did nothing.** Nothing verified them and nothing read them; the only rule was the uniqueness index. Closed by giving them their job: `domain` on the company listing ([hub-api-v2#52](https://github.com/AirGateway/hub-api-v2/pull/52), [agw-api-v2#88](https://github.com/AirGateway/agw-api-v2/pull/88)), the traveller form's pre-selection and the "Email domains" label ([bookingpad-app-v2#48](https://github.com/AirGateway/bookingpad-app-v2/pull/48)), and the domain fallback of the creating link for company-less bookings (agw-api-v2#88). Verification itself — proving an agency controls a domain — remains unbuilt and unpromised. | Closed |
 | **The order response said nothing about the roster.** Hub stored and sent `company_id` on the order and `traveler_id` on every passenger since the columns existed, and agw-api-v2 decoded both into its domain — and dropped both in the adapter that builds every order response. So BookingPad's order page could show neither the company a booking was for nor which passengers were already on the roster, and could not offer "Add to roster". Closed by [agw-api-v2#87](https://github.com/AirGateway/agw-api-v2/pull/87) (`companyID`, `passengers[].travellerId`) and [bookingpad-app-v2#47](https://github.com/AirGateway/bookingpad-app-v2/pull/47) (company chip in the order header, per-passenger "View profile" / "Add to roster"). No hub change was needed. | Closed |
 | **The order listing cannot be filtered by company or traveller id.** `GET /v2/air/orders/list` narrows by traveller only through `Ag-Traveller`; hub's `GET /agw/orders` has `traveller_id` but no `company_id`. "Trips" on a traveller and "Bookings" on a company wait on this. | Open |
