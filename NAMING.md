@@ -75,9 +75,17 @@ Proposals are the outlier that never got the treatment. They are being brought i
   `proposalOfferOption`. The verb-last order is what keeps every operation on a resource
   sorting together in the docs, and it is why `profileTravellerCreate` reads the way it
   does.
+- **A sub-resource of the collection takes the same shape as one of an item.** It hangs
+  off the collection path rather than off `{id}`, and nothing else about the rule changes:
+  `GET /v2/proposals/activity` → `proposalActivityList`,
+  `POST /v2/proposals/activity/acknowledge` → `proposalActivityAcknowledge`. Note what the
+  verb-last rule buys here — `proposalActivityList` sorts beside `proposalActivityAcknowledge`
+  and both sort under `proposal`, which is exactly the grouping the docs need. A collection
+  sub-resource is also why a static segment may sit where an id could: ids are prefixed
+  (`PRP…`, see [IDS.md](IDS.md)), so `activity` can never be mistaken for one.
 - **Verbs are the CRUD set where the operation is CRUD** — `Create`, `List`, `Retrieve`,
   `Update`, `Delete` — and the domain's own word where it is not: `Accept`, `Decline`,
-  `Assign`, `Confirm`, `Withdraw`, `Discard`.
+  `Assign`, `Confirm`, `Withdraw`, `Discard`, `Acknowledge`.
 
 ## Schema naming
 
