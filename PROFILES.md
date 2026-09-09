@@ -474,7 +474,7 @@ does not serve.
 
 Both listings take `page` and `limit` (**`limit`, not `pageSize`** — hub's own name).
 
-`GET /agw/travellers` additionally takes, all optional, all AND-ed:
+`GET /agw/travellers` additionally takes, all optional, all AND-ed with each other:
 
 | Parameter | Meaning |
 |---|---|
@@ -483,14 +483,29 @@ Both listings take `page` and `limit` (**`limit`, not `pageSize`** — hub's own
 | `email` | Match on email |
 | `name` | Match on first name |
 | `surname` | Match on surname |
+| `search` | **One term matched against `name`, `surname`, `email` and `traveler_code` at once — OR-ed across them.** The only OR on the surface. AND-ed with every other parameter |
 | `status` | Comma-separated. Applied in SQL before the page is counted and sliced |
 
 `GET /agw/companies` additionally takes `name` (match on name) and the same comma-separated
 `status`.
 
-`name`, `surname` and `email` back a **predictive search**, so they MUST be
+`name`, `surname`, `email` and `search` back a **predictive search**, so they MUST be
 case-insensitive partial matches, not equality. This is the one place where getting the
 matching semantics wrong still returns `200` and simply looks broken to an agent.
+
+### `search` is what a search box sends; the field filters are not
+
+The three field filters exist for a caller that knows which column it wants — the
+passenger form's predictive search asks for `name` *or* `surname` depending on which box
+the agent is typing in. A **single search box** does not know, and MUST send `search`.
+
+It MUST NOT send its term as `name`, `surname` and `email` together. Those three are
+AND-ed, so that asks for a person whose given name, family name *and* address all contain
+the term — i.e. somebody whose surname contains their first name. BookingPad's Profiles
+screen did exactly this and found nobody for any ordinary name. See *Known gaps*.
+
+AGW API V2 exposes the same parameter as `search` on `GET /v2/profiles/travellers`, with
+the same semantics, and forwards it to hub unchanged.
 
 ### The two listings shipped before the `status` column (historical, kept for the rule it taught)
 
@@ -592,3 +607,4 @@ Deliberate, tracked, and never precedent.
 | **agw-api-v2 sent hub the `status` filter hub is required to refuse.** The rejection clause above was written as hub's obligation alone, so hub returned the mandated `422` while agw kept forwarding the parameter — and agw's service layer *substitutes* a default (`[Active]`, or `[Provisional, Active]`) when a caller names no status, so every company and traveller listing carried one. Both listings failed 100% of the time, including BookingPad's Company picker opened with an empty search box. Compounded by the `422` mapping: it reached agents as "This profile is missing a field it needs." Closed by [agw-api-v2#66](https://github.com/AirGateway/agw-api-v2/pull/66) — agw omits `status` and filters on the derived status itself. The corollary is now normative above. | Fixed |
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
 | **The profile WRITES were missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), the traveller create and update in [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40), and the company writes, both deletes and the status writes in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). | Closed |
+| **The roster search on BookingPad's Profiles screen matched almost nobody.** The screen has one box and sent its term as `name`, `surname` and `email` at once; agw-api-v2 forwarded all three; hub AND-s them in SQL. Searching "Alex" therefore required a surname containing "alex". Nothing returned an error — `200` and an empty table, which reads as "we hold nobody by that name". The predictive search on the passenger form was unaffected, because it sends one field at a time. Closed by adding `search` — OR-ed across name, surname, email and traveller code, AND-ed with everything else — through all three layers: [hub-api-v2#46](https://github.com/AirGateway/hub-api-v2/pull/46), [agw-api-v2#81](https://github.com/AirGateway/agw-api-v2/pull/81), [bookingpad-app-v2#39](https://github.com/AirGateway/bookingpad-app-v2/pull/39). Deploy order is hub → agw → BookingPad: a layer that does not yet know `search` ignores it and answers an unfiltered `200`, which is the wrong-answer failure this file already forbids for `status`. | Closed |
