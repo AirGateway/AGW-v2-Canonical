@@ -53,6 +53,12 @@ calls things, what it is allowed to do to them, and how an agent sees them.
 - **Three vocabularies meet on a proposal** and must never be mixed: the
   proposal's seven statuses, an option's six, and each backing order's own.
   `Expired` and `Pending` exist in more than one and mean different things.
+- **The trail is a thread and a feed.** `TravellerMessaged` / `AgencyMessaged` are
+  the two halves of the conversation — there is no separate messages resource — and
+  **activity** is the same entries aggregated across every proposal, newest first,
+  flagged seen or unread. Seen is the **agency's, not each agent's**, held as a
+  watermark on the entry **id** and never on a timestamp, and moved only by an
+  explicit acknowledge — never by reading.
 
 ## [PROFILES.md](PROFILES.md) — traveller and company profiles
 

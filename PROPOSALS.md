@@ -517,6 +517,7 @@ says they did.
 | `ExpiryChanged` | The deadline was set, extended or cleared. Details carry old and new. |
 | `NoteAdded` | An internal free-text note. The agency talking to itself. |
 | `TravellerMessaged` | An agent wrote **to the traveller**. Kept apart from `NoteAdded` because the trail is evidence an agency shows that customer, so which of the two it was has to be legible. |
+| `AgencyMessaged` | The traveller wrote **to the agency**. The other half of `TravellerMessaged`, and the reason the trail needs no separate messages resource: the pair *is* the thread, each entry carrying its text in `details.message`, and the direction is legible from the action alone rather than inferred from the actor. Both are visible to both sides. |
 | `OptionCancelRequested` | A rejected option's airline hold was handed to the cancellation dispatch. One entry **per attempt**, so the trail shows the retrying rather than hiding it. `System` actor. |
 | `OptionCancelFailed` | Releasing a rejected option's hold failed permanently. `System` actor. |
 
@@ -524,12 +525,118 @@ says they did.
 
 An agency reads **all** of it. A traveller reads the story of their own request —
 raised, sent, offered, withdrawn, approved, changes requested, cancelled, confirmed,
-expired, deadline changed, messaged — **including a `ProposalCancelled` or an
+expired, deadline changed, and both halves of the conversation they are party to
+(`TravellerMessaged`, `AgencyMessaged`) — **including a `ProposalCancelled` or an
 `OptionApproved` an agent entered on their behalf, comment and all**, and **not** the
 parts where the agency is talking
 to itself: `NoteAdded`, `AgentAssigned`, `OptionCancelRequested`, `OptionCancelFailed`,
 and anything an `Admin` did. That split is why an internal note and a message to the
 traveller are separate actions rather than one.
+
+## Activity — the trail, aggregated
+
+The trail answers *what happened to **this** proposal*. An agency has to answer the same
+question from the other end: **what has happened that nobody here has seen yet** —
+across every proposal at once, newest first — because the alternative is an agent
+opening twenty requests to find the one customer who is waiting on them.
+
+That is **one read over the same entries**, never a second store. Nothing below adds a
+row to a trail, changes what a trail contains, or gives a proposal a second history:
+
+| Operation | Path | What it does |
+|---|---|---|
+| `proposalActivityList` | `GET /v2/proposals/activity` | Every history entry in the caller's scope, newest first, each flagged seen or unread, each naming the proposal it belongs to. |
+| `proposalActivityAcknowledge` | `POST /v2/proposals/activity/acknowledge` | Records that the caller's side has seen one proposal's trail — or every trail in scope — up to a given entry. |
+
+### Scoped by audience, never by status
+
+The feed is scoped exactly as every other proposal read is: an agency sees its own
+proposals' entries, a traveller sees their own, and a traveller sees only the half of
+each trail [the two trails](#the-two-trails) rule already grants them.
+
+**There is no `status` filter, by design — not as a default, not as an option.** A
+terminal proposal cannot produce new activity, so filtering by status buys nothing and
+costs the feed its integrity: the moment a proposal reached `Confirmed` or `Cancelled`,
+every entry on it would vanish from the feed **including the entry that just recorded
+it**, and a feed that can never show a confirmation is not a feed.
+
+The stronger reason is the cancellation dispatch. It is asynchronous and writes
+`OptionCancelRequested` / `OptionCancelFailed` some time after the approval that queued
+them, so one of those entries can land on a proposal that has gone terminal in between.
+A status-filtered feed would hide precisely the `OptionCancelFailed` that needs an
+agent, on precisely the proposals nobody is looking at any more. Time ordering already
+buries dead proposals; that is the whole mechanism required.
+
+### Seen is the agency's, not each agent's
+
+An agency inbox is worked by a desk, not by one person. **Seen means seen by anybody on
+that side**: one agent opening a request clears it for all of them, which is what stops
+five agents chasing the same message.
+
+The cost is real and is accepted rather than hidden: an agent cannot tell *nobody has
+read this* from *a colleague read it and did nothing*. So an entry reports **who**
+cleared it and **when**, and a surface says so — "read by maria@ 20 min ago" — instead
+of merely dropping a dot. If a desk ever needs *unread by me*, that is a second audience
+row and not a redesign.
+
+The two sides count independently. An agent reading the trail does not mark it read for
+the traveller, and the traveller reading it in their app does not clear the agency's
+badge.
+
+### The watermark is an entry id, never a timestamp
+
+Seen state is a **watermark per (proposal, audience)**: the highest entry the audience
+has seen. Unread is everything above it. One row per proposal rather than one per entry,
+and one write per proposal opened.
+
+**It is keyed on the entry's identity, never on `occurred_at`.** `occurred_at` is when
+the action *happened*, which is deliberately not when the row was written — a queued job
+stamps the moment it acted. A timestamp watermark would therefore swallow, in silence,
+every entry written after a watermark that already covers its timestamp. The identity
+only ever goes up.
+
+Two corollaries that follow from that and are normative:
+
+- **The watermark only moves forward.** Acknowledging an older entry than the one
+  already recorded is a successful no-op, so a re-read, a double-tapped button and two
+  agents acting at once cannot un-see anything.
+- **Seen is computed per entry, not per proposal.** A proposal read an hour ago that the
+  traveller has written on twice since comes back with those two entries unread and
+  everything under them seen. A per-proposal flag would collapse exactly the distinction
+  the feed exists to draw.
+
+### Acknowledging is an explicit write
+
+**Reading a trail does not mark it seen.** `proposalHistory` and `proposalActivityList`
+are safe, repeatable reads and must stay that way: a `GET` that moves the watermark
+means a browser prefetch, a re-render, or a partner polling the trail silently clears an
+agency's unread state, and it makes the history endpoint unsafe to retry.
+
+So a surface acknowledges deliberately — when it has actually put the trail in front of
+a person, and from an explicit "mark all as read". Acknowledging with no proposal named
+covers every proposal in scope.
+
+### Activity is read, not delivered
+
+Hub has no notification channel. Nothing here emails, pushes or otherwise delivers
+anything; the feed is a thing an agent looks at, and a message reaches its recipient
+when they next read it. That is a known gap below, not a property of the design — when
+delivery arrives it hangs off these same entries.
+
+### The layer contract for activity
+
+| Layer | What it owns |
+|---|---|
+| **hub persistence** | `bookings.proposal_history_seen` — the watermark, keyed `(proposal_id, audience, audience_id)` with `audience` in (`Agency`, `Traveller`). **Mutable by design, which is exactly why it is not a column on an entry**: the trail stays append-only and carries no record of who read it. |
+| **hub-api-v2** | `GET /agw/proposals/activity`, `POST /agw/proposals/activity/acknowledge`, scoped by the same `agency_id`-or-`traveller_id` pair every other proposal read takes. The traveller's narrower trail is applied by the one existing filter, never re-implemented per endpoint. |
+| **agw-api-v2** | The two operations above. Page size is **50, both maximum and default** — hub's pager caps at 50 and a spec that promised more would 500. |
+| **BookingPad** | The bell and the feed live **inside the Proposals views only**: right-aligned on the status-tab row, with the feed as a view of the existing `/proposals` route rather than a route of its own. An agent elsewhere in the product sees no badge, deliberately, for now. |
+| **Traveller app** | May read the same endpoint under its own `Traveller` audience. Not required to. |
+
+**An unknown action must still render.** Every surface reading the feed shows an action
+it does not recognise under its raw name rather than dropping the row — the rule the
+trail already follows, and what lets one layer lag another by a deploy without losing
+entries.
 
 ## The traveller's view: a proposal becomes a booking
 
@@ -597,6 +704,8 @@ Deliberate, tracked, and never precedent.
 
 | Gap | Status |
 |---|---|
+| **The activity feed is specified here and not yet built.** The two operations above, `bookings.proposal_history_seen` and the BookingPad bell are normative but unimplemented; this page landed first, as it must. Following in hub, then AGW API V2, then BookingPad. | In progress |
+| **Nothing is delivered.** There is no notification channel on any layer: no email, no push, no webhook out. An agency learns a traveller wrote by looking, which is what makes the feed load-bearing rather than a convenience. Delivery would hang off these entries and change nothing above. | Open |
 | **The expiry sweep is not implemented.** `Expired` is declared, seeded and mirrored everywhere, and the transitions above are normative — but nothing yet moves a proposal into it. It will follow the `/agw/orders/status/expire` precedent: a cross-tenant scheduler-driven `POST` deriving the outstanding set from current state on every run, which makes the sweep itself the retry. | Open |
 | **An agency cannot record that *it* turned a request down.** The agency can now cancel from any live status, but `Cancelled` asserts the **traveller's** decision however it was entered, so *the agency declined this* is still not recordable and "how often did we turn work away?" cannot be answered apart from "how often did customers say no?". An agency-side terminal status is the fix if that question is ever asked — reusing `Cancelled` for it is not, because it would corrupt the one thing that status means. | Open |
 | **The vocabulary is migrated in hub; the other layers follow.** hub-api-v2 stores the seven statuses above, the six option statuses and the action names on this page (migration `20260908135533_proposals_canonical_vocabulary`), and ships `proposalCancel` (both scopes, any live status), `proposalApprove` (both scopes) and Confirmed-on-issue. AGW API V2, BookingPad and the traveller app are being migrated in the PRs that follow hub's; until each lands, that layer still speaks the older set. | In progress |

@@ -48,8 +48,12 @@ More items will be added here. One item is one row; see *Adding an item*.
   accessible name (`title` / `aria-label`) and appear on focus, not only on
   `:hover`.
 - **The pair does not change between surfaces.** The same order id links the same way
-  in the orders dashboard, on a proposal option, and inside a dialog. A surface may
-  add context around the pair; it may not swap the affordance or drop it.
+  in the orders dashboard, on a proposal option, inside a dialog, and on a card in the
+  proposals activity feed. A surface may add context around the pair; it may not swap
+  the affordance or drop it. The feed is the case that tempts an exception — a whole card
+  is clickable, so the id looks decorative — and it is not one: the card may carry a click
+  as well, but the id inside it is still the anchor, or ⌘-clicking a request out of a feed
+  to triage it in a second tab stops working.
 - **Cross-app links go through configuration.** A front end that cannot route to the
   item itself — the Expo app, the traveller app — links to BookingPad through the
   environment's configured base URL. Never a hardcoded host: `sandbox`, staging and
