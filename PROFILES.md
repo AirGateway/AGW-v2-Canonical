@@ -380,6 +380,45 @@ agency's book of business. Two guards:
 
 Past bookings and proposals do **not** follow the move. They record what was true then.
 
+## The roster ↔ bookings link, as the order carries it
+
+The association table above says an order passenger points at zero or one traveller and
+an order at zero or one company. This section says how a client sees that, because a
+roster nobody can reach from a booking is an island.
+
+### What the order says
+
+| Field | Where | Notes |
+|---|---|---|
+| `companyID` | on the order (`AirOrderRetrieveResponse`, and every order-shaped response) | The company given on create, absent otherwise. Read-only: set at booking, never changed. |
+| `passengers[].travellerId` | on each passenger | The profile the platform resolved for this passenger, absent when nobody on the roster matches. **Read-only**: `Passenger` is also the create body's shape, and the field is ignored on input — a link is never asserted by a client, it follows from the roster. |
+
+Neither carries a name. A name is a lookup, and `/v2/profiles/companies/{id}` and
+`/v2/profiles/travellers/{id}` already answer it; a front end shows the pair per
+[PRESENTATION.md](PRESENTATION.md) and resolves the name itself.
+
+### How a passenger becomes linked — and why "Add to roster" is a create
+
+**The link is resolved by email, and re-resolved on every re-persist.** AGW API V2 links
+at booking (creating a `Provisional` profile when the order names a company and nobody
+holds the address), and again whenever a flow re-persists the order-view it rebuilt from
+the airline's answer — issue, update, add seats or services, and a live retrieve. The
+re-link **adopts only profiles that already exist**, never creates one (a read must not
+have a side effect on the roster), and an order booked *for a company* may only adopt a
+profile held by *that company*; an order without one adopts across the agency when the
+address is unique there. A passenger already linked is left alone.
+
+So a front end never writes a link. **"Add to roster" on an unlinked passenger is
+`profileTravellerCreate`** — the agent asserting a profile, `Active`, filled from the
+passenger (its email above all), in the order's company when the order names one — after
+which a re-read of the order finds the passenger linked. A profile created in a different
+company than the order's will not link, by the rule above; a client preselects the
+order's company for that reason.
+
+There is deliberately **no unlink**: hub's passenger upsert keeps a stored link when the
+incoming one is empty (a `NULL` there always means "not looked up", never "remove"), so
+the only way a link goes is with the profile (`SET NULL`).
+
 ## Validations
 
 Each row says who enforces it and what a violation returns.
@@ -676,4 +715,7 @@ Deliberate, tracked, and never precedent.
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
 | **The profile WRITES were missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), the traveller create and update in [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40), and the company writes, both deletes and the status writes in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). | Closed |
 | **BookingPad's company remarks were a mock, and the Remarks tab rendered nothing.** The order form's "Company remarks" section was filled from a hardcoded template served outside production (`company-remark-template.mock.ts`), so every dev booking carried a company remark whose id matched nothing in hub, and the templates an agency configured for a corporate — through the admin console only — never reached the agent booking for it. Closed by exposing the templates as a sub-resource of the company through all three layers: [hub-api-v2#49](https://github.com/AirGateway/hub-api-v2/pull/49) (`/agw/companies/{company_id}/remarks`, agency-scoped), [agw-api-v2#85](https://github.com/AirGateway/agw-api-v2/pull/85) (`/v2/profiles/companies/{id}/remarks`, the `409` for a second mandatory template), [bookingpad-app-v2#45](https://github.com/AirGateway/bookingpad-app-v2/pull/45) (Remarks tab with add / edit / require / delete, per-company templates in the booking flow, mock deleted). Deploy order is hub → agw → BookingPad: an agw build without the route reports a bare `404` as "route not implemented" (`500`), never as a missing profile. | Closed |
+| **The order response said nothing about the roster.** Hub stored and sent `company_id` on the order and `traveler_id` on every passenger since the columns existed, and agw-api-v2 decoded both into its domain — and dropped both in the adapter that builds every order response. So BookingPad's order page could show neither the company a booking was for nor which passengers were already on the roster, and could not offer "Add to roster". Closed by [agw-api-v2#87](https://github.com/AirGateway/agw-api-v2/pull/87) (`companyID`, `passengers[].travellerId`) and [bookingpad-app-v2#47](https://github.com/AirGateway/bookingpad-app-v2/pull/47) (company chip in the order header, per-passenger "View profile" / "Add to roster"). No hub change was needed. | Closed |
+| **The order listing cannot be filtered by company or traveller id.** `GET /v2/air/orders/list` narrows by traveller only through `Ag-Traveller`; hub's `GET /agw/orders` has `traveller_id` but no `company_id`. "Trips" on a traveller and "Bookings" on a company wait on this. | Open |
+| **A stored passenger→traveller link cannot be removed.** Deliberate: the only writer is the whole-order upsert, whose `coalesce` keeps a link the incoming view does not carry. Removing a wrong link means deleting the wrong profile (`SET NULL`) or repointing it by re-persisting with the right one. | Open, deliberate |
 | **The roster search on BookingPad's Profiles screen matched almost nobody.** The screen has one box and sent its term as `name`, `surname` and `email` at once; agw-api-v2 forwarded all three; hub AND-s them in SQL. Searching "Alex" therefore required a surname containing "alex". Nothing returned an error — `200` and an empty table, which reads as "we hold nobody by that name". The predictive search on the passenger form was unaffected, because it sends one field at a time. Closed by adding `search` — OR-ed across name, surname, email and traveller code, AND-ed with everything else — through all three layers: [hub-api-v2#46](https://github.com/AirGateway/hub-api-v2/pull/46), [agw-api-v2#81](https://github.com/AirGateway/agw-api-v2/pull/81), [bookingpad-app-v2#39](https://github.com/AirGateway/bookingpad-app-v2/pull/39). Deploy order is hub → agw → BookingPad: a layer that does not yet know `search` ignores it and answers an unfiltered `200`, which is the wrong-answer failure this file already forbids for `status`. | Closed |
