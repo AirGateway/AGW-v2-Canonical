@@ -145,7 +145,7 @@ traveller has one; there is no such thing as a company-less profile.
 | `status` | enum | **yes** | `Active` or `Inactive`. |
 | `name` | string(255) | **yes** | Non-empty. |
 | `accountNumber` | string(255) | no | The corporate's account reference. Surfaced in BookingPad as the GDS account id. |
-| `domains[]` | hostname | no | Email domains belonging to this company. Lowercase. **Unique across all companies** — a domain identifies exactly one. |
+| `domains[]` | hostname | no | Email domains belonging to this company. Lowercase. **Unique across all companies** — a domain identifies exactly one, and that is what they are *for*: an address at one of them names the company its holder travels for (see *Email domains resolve a company*). Nothing verifies a domain; BookingPad labels them **"Email domains"**, and the earlier "Verified domains" label promised a check nobody ran. |
 | `discountCodes` | map | no | Negotiated codes, keyed by airline. |
 | `loyaltyProgramDiscountCodes` | map | no | As above, for loyalty programmes. |
 | `customFields` | map | no | Agency-defined key/value pairs. |
@@ -419,6 +419,28 @@ There is deliberately **no unlink**: hub's passenger upsert keeps a stored link 
 incoming one is empty (a `NULL` there always means "not looked up", never "remove"), so
 the only way a link goes is with the profile (`SET NULL`).
 
+### Email domains resolve a company
+
+A company's `domains[]` exist to answer one question: **whose address is this?** A domain
+belongs to exactly one company across the platform, so `ada@example.com` names at most one
+company — the one claiming `example.com`. Two places ask:
+
+- **The traveller form.** While an agent types an address for a *new* profile and has not
+  picked a company, the form asks `profileCompanyList` with `domain=` and pre-selects the
+  one company it names, saying so. The agent can still change it; a company the agent has
+  already picked is never overridden.
+- **A booking made for nobody in particular.** The creating link at order time looks across
+  the agency first, as before. When nobody holds the address, the address's domain is looked
+  up; if it names one *Active* company of the agency, the passenger is resolved inside it —
+  minting the `Provisional` profile there, exactly as a booking made *for* that company
+  would have. A domain nobody claims leaves the passenger unlinked, as before. The order's
+  own `companyID` is **not** set from this: which company a booking was made for is a fact
+  about the booking, and this is a fact about the person.
+
+The non-creating re-link never consults domains — a read must not decide anybody's company.
+`Inactive` companies do not claim addresses for new profiles: a withdrawn corporate must not
+keep growing a roster.
+
 ## Validations
 
 Each row says who enforces it and what a violation returns.
@@ -593,7 +615,9 @@ Both listings take `page` and `limit` (**`limit`, not `pageSize`** — hub's own
 | `search` | **One term matched against `name`, `surname`, `email` and `traveler_code` at once — OR-ed across them.** The only OR on the surface. AND-ed with every other parameter |
 | `status` | Comma-separated. Applied in SQL before the page is counted and sliced |
 
-`GET /agw/companies` additionally takes `name` (match on name) and the same comma-separated
+`GET /agw/companies` additionally takes `name` (match on name), `domain` (**exact**, case-insensitive
+match on a claimed email domain — at most one row, since a domain belongs to one company; shipped in
+[hub#52](https://github.com/AirGateway/hub-api-v2/pull/52)) and the same comma-separated
 `status`.
 
 `name`, `surname`, `email` and `search` back a **predictive search**, so they MUST be
@@ -715,6 +739,7 @@ Deliberate, tracked, and never precedent.
 | **BookingPad's company picker is served by a mock, not by this contract.** `companiesMockInterceptor` is unconditionally active on `main` and `sandbox` and answers `GET /v2/profiles/companies` with eleven hardcoded companies carrying invented UUIDs. So the company search *appears* to work while offering rows no `company_id` in hub matches. Deliberate — it keeps the flow demoable — and it must be removed in the same PR that points the picker at the real endpoint. Until then, a booking snapped to a company from that list is snapped to a company that does not exist. | Open, deliberate |
 | **The profile WRITES were missing in hub**: `POST`/`PATCH`/`DELETE` on `/agw/travellers` and on `/agw/companies`. The read side landed in [hub#29](https://github.com/AirGateway/hub-api-v2/pull/29), the traveller create and update in [hub#40](https://github.com/AirGateway/hub-api-v2/pull/40), and the company writes, both deletes and the status writes in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42). | Closed |
 | **BookingPad's company remarks were a mock, and the Remarks tab rendered nothing.** The order form's "Company remarks" section was filled from a hardcoded template served outside production (`company-remark-template.mock.ts`), so every dev booking carried a company remark whose id matched nothing in hub, and the templates an agency configured for a corporate — through the admin console only — never reached the agent booking for it. Closed by exposing the templates as a sub-resource of the company through all three layers: [hub-api-v2#49](https://github.com/AirGateway/hub-api-v2/pull/49) (`/agw/companies/{company_id}/remarks`, agency-scoped), [agw-api-v2#85](https://github.com/AirGateway/agw-api-v2/pull/85) (`/v2/profiles/companies/{id}/remarks`, the `409` for a second mandatory template), [bookingpad-app-v2#45](https://github.com/AirGateway/bookingpad-app-v2/pull/45) (Remarks tab with add / edit / require / delete, per-company templates in the booking flow, mock deleted). Deploy order is hub → agw → BookingPad: an agw build without the route reports a bare `404` as "route not implemented" (`500`), never as a missing profile. | Closed |
+| **Domains were stored, labelled "Verified", and did nothing.** Nothing verified them and nothing read them; the only rule was the uniqueness index. Closed by giving them their job: `domain` on the company listing ([hub-api-v2#52](https://github.com/AirGateway/hub-api-v2/pull/52), [agw-api-v2#88](https://github.com/AirGateway/agw-api-v2/pull/88)), the traveller form's pre-selection and the "Email domains" label ([bookingpad-app-v2#48](https://github.com/AirGateway/bookingpad-app-v2/pull/48)), and the domain fallback of the creating link for company-less bookings (agw-api-v2#88). Verification itself — proving an agency controls a domain — remains unbuilt and unpromised. | Closed |
 | **The order response said nothing about the roster.** Hub stored and sent `company_id` on the order and `traveler_id` on every passenger since the columns existed, and agw-api-v2 decoded both into its domain — and dropped both in the adapter that builds every order response. So BookingPad's order page could show neither the company a booking was for nor which passengers were already on the roster, and could not offer "Add to roster". Closed by [agw-api-v2#87](https://github.com/AirGateway/agw-api-v2/pull/87) (`companyID`, `passengers[].travellerId`) and [bookingpad-app-v2#47](https://github.com/AirGateway/bookingpad-app-v2/pull/47) (company chip in the order header, per-passenger "View profile" / "Add to roster"). No hub change was needed. | Closed |
 | **The order listing cannot be filtered by company or traveller id.** `GET /v2/air/orders/list` narrows by traveller only through `Ag-Traveller`; hub's `GET /agw/orders` has `traveller_id` but no `company_id`. "Trips" on a traveller and "Bookings" on a company wait on this. | Open |
 | **A stored passenger→traveller link cannot be removed.** Deliberate: the only writer is the whole-order upsert, whose `coalesce` keeps a link the incoming view does not carry. Removing a wrong link means deleting the wrong profile (`SET NULL`) or repointing it by re-persisting with the right one. | Open, deliberate |
