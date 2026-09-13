@@ -58,69 +58,306 @@ one event), discovered by an `airOrderRetrieve`. PascalCase marks canonical-laye
 concepts; camelCase is reserved for things you actually call in the API Requester, and
 `AirOrderIssueExternal` is never called.
 
-## Diagram
+## Diagrams — one per workflow
+
+The lifecycle is drawn **one workflow at a time**. A single aggregate diagram forces the
+reader to assemble a workflow from edges scattered across it; each diagram below is the
+whole truth about one workflow and nothing else — the status it must start from, the API
+Requester request sequence that fulfils it, the status it lands on, and the one event it
+emits.
+
+These diagrams are the two normative tables (§ Workflows → Transitions → Events and
+§ Workflow ↔ request catalogue) drawn. Where a diagram and a table disagree, the table
+wins.
+
+Shapes carry meaning and are identical in every diagram:
+
+| Shape | Meaning |
+|---|---|
+| Rounded — `([Issued])` | A canonical order status |
+| Rectangle — `[airOrderReshop]` | An API Requester request (camelCase) |
+| Framed — `[[airOrderRebook]]` | The **terminating** request — the one the workflow is named after |
+| Dashed edge | An optional request, a side effect, or a no-op |
+| Label on the edge into a status | The canonical event emitted |
+
+Nothing moves until the terminating request returns OK. An incomplete or failed
+sequence leaves the order exactly where it was — no transition, no event (see
+§ The binding rule).
+
+### Entry points
+
+Two workflows, and only these two, create an order.
+
+#### `AirOrderCreate`
 
 ```mermaid
 ---
-title: AirGateway Order Status State Machine
+title: "AirOrderCreate — start → Pending"
 ---
-stateDiagram-v2
-    direction LR
-
-    [*] --> Pending: AirOrderCreate
-    [*] --> Issued: AirOrderCreateAndIssue
-
-    Pending --> Cancelled: AirOrderCancel
-    Pending --> Issued: AirOrderIssue
-    Pending --> Issued: AirOrderIssueExternal (issued airline-side, via airOrderRetrieve)
-    Pending --> Expired: airOrderRetrieve (payment TTL lapsed)
-
-    Issued --> Voided: AirOrderVoid
-    Issued --> Refunded: AirOrderRefund
-    Issued --> Pending: AirOrderRebook
-    Issued --> Issued: AirOrderRebookAndIssue
-    Issued --> Issued: AirOrderSplit
-
-    Issued --> AllFlown: airOrderRetrieve (all coupons flown)
-    Issued --> AllNoShow: airOrderRetrieve (all coupons no_show)
-    Issued --> SomeFlown: airOrderRetrieve (all coupons settled, mixed outcome)
-    Issued --> PartFlown: airOrderRetrieve (some coupons settled, some still open)
-
-    %% ALL detection states are surfaced by airOrderRetrieve; Blocked & Unknown from ANY state
-    Pending --> Blocked: airOrderRetrieve
-    Pending --> Unknown: airOrderRetrieve
-    Issued  --> Blocked: airOrderRetrieve
-    Issued  --> Unknown: airOrderRetrieve
-
-    %% Blocked / Unknown are NOT terminal - they may return to the prior state
-    Blocked --> Issued: airOrderRetrieve (recovered - returns to PRIOR state)
-    Unknown --> Issued: airOrderRetrieve (recovered - returns to PRIOR state)
-
-    note right of Blocked
-        EVERY detection transition (Expired, IssueExternal, AllFlown,
-        PartFlown, SomeFlown, AllNoShow, Blocked, Unknown, and
-        Blocked/Unknown recovery) is discovered by an airOrderRetrieve
-        call to the airline API - never invoked as a workflow.
-        Blocked and Unknown are reachable from ANY state and are NOT
-        terminal: both can stem from a temporary error, so they return
-        to the exact state held before entering them (drawn to Issued
-        only for readability).
-        airOrderChangeNotif is an inbound callback that touches NO state.
-    end note
-
-    %% PartFlown is transitional (never terminal): it advances as remaining coupons settle
-    PartFlown --> AllFlown: airOrderRetrieve (remaining coupons flown)
-    PartFlown --> AllNoShow: airOrderRetrieve (remaining coupons no_show)
-    PartFlown --> SomeFlown: airOrderRetrieve (all coupons settled, mixed outcome)
-
-    Cancelled --> [*]
-    Expired   --> [*]
-    Voided    --> [*]
-    Refunded  --> [*]
-    AllFlown  --> [*]
-    AllNoShow --> [*]
-    SomeFlown --> [*]
+flowchart LR
+    S(["start"]) --> A["airShopping"] --> B["airOfferConfirm"]
+    B -. optional .-> O["airSeatAvailability<br/>airServiceList"]
+    O -.-> C
+    B --> C[["airOrderCreate"]]
+    C -- AirOrderCreated --> T(["Pending"])
 ```
+
+The order is created but not issued; it now sits against the airline's payment time
+limit.
+
+#### `AirOrderCreateAndIssue`
+
+```mermaid
+---
+title: "AirOrderCreateAndIssue — start → Issued"
+---
+flowchart LR
+    S(["start"]) --> A["airShopping"] --> B["airOfferConfirm"]
+    B -. optional .-> O["airSeatAvailability<br/>airServiceList"]
+    O -.-> C
+    B --> C[["airOrderCreateAndIssue<br/>carries form of payment"]]
+    C -- AirOrderIssued --> T(["Issued"])
+```
+
+Technically the same path as `AirOrderCreate`; the terminating request carries a form of
+payment, which issues the order immediately and skips `Pending` altogether.
+
+### Issuing a pending order
+
+#### `AirOrderIssue`
+
+```mermaid
+---
+title: "AirOrderIssue — Pending → Issued"
+---
+flowchart LR
+    S(["Pending"]) -. optional .-> R["airOrderReprice"]
+    R -.-> I
+    S --> I[["airOrderIssue"]]
+    I -- AirOrderIssued --> T(["Issued"])
+```
+
+### Ending the order
+
+#### `AirOrderCancel`
+
+```mermaid
+---
+title: "AirOrderCancel — Pending → Cancelled"
+---
+flowchart LR
+    S(["Pending"]) --> C[["airOrderCancel"]]
+    C -- AirOrderCancelled --> T(["Cancelled<br/>terminal"])
+```
+
+Cancellation applies to an order that was never issued. An issued order is ended by
+`AirOrderVoid` or `AirOrderRefund`, never by `AirOrderCancel`.
+
+#### `AirOrderVoid`
+
+```mermaid
+---
+title: "AirOrderVoid — Issued → Voided"
+---
+flowchart LR
+    S(["Issued"]) --> A["airOrderVoidCheck"] --> B[["airOrderVoid"]]
+    B -- AirOrderVoided --> T(["Voided<br/>terminal"])
+```
+
+Both requests are required: if `airOrderVoidCheck` does not clear, the workflow does not
+complete and the order stays `Issued`.
+
+#### `AirOrderRefund`
+
+```mermaid
+---
+title: "AirOrderRefund — Issued → Refunded"
+---
+flowchart LR
+    S(["Issued"]) --> A["airOrderRefundQuote"] --> B[["airOrderRefund"]]
+    B -- AirOrderRefunded --> T(["Refunded<br/>terminal"])
+```
+
+### Rebooking
+
+#### `AirOrderRebook`
+
+```mermaid
+---
+title: "AirOrderRebook — Issued → Pending"
+---
+flowchart LR
+    S(["Issued"]) --> A["airOrderReshop"] --> B["airOrderReshopConfirm"] --> C[["airOrderRebook"]]
+    C -- AirOrderRebooked --> T(["Pending"])
+```
+
+Rebooking without payment sends the order **backwards** to `Pending`, where it is subject
+to a payment time limit again and must be issued by `AirOrderIssue`.
+
+#### `AirOrderRebookAndIssue`
+
+```mermaid
+---
+title: "AirOrderRebookAndIssue — Issued → Issued"
+---
+flowchart LR
+    S(["Issued"]) --> A["airOrderReshop"] --> B["airOrderReshopConfirm"] --> C[["airOrderRebookAndIssue"]]
+    C -- AirOrderReissued --> T(["Issued"])
+```
+
+Same first two requests as `AirOrderRebook`; the terminating request reissues in place,
+so the order never leaves `Issued` and the event is `AirOrderReissued`, not
+`AirOrderRebooked`.
+
+### Structural
+
+#### `AirOrderSplit`
+
+```mermaid
+---
+title: "AirOrderSplit — Issued → Issued, plus a new Issued order"
+---
+flowchart LR
+    S(["Issued<br/>source order"]) --> A[["airOrderSplit"]]
+    A -- AirOrderSplit --> T(["Issued<br/>source order, status unchanged"])
+    A -. "side effect: new PNR, new AGW id" .-> N(["Issued<br/>new order"])
+```
+
+The dashed edge is the one thing a pure state diagram cannot express: the split creates a
+**second order**, already `Issued`. The source order's own status does not move, which is
+why the canonical transition is a self-transition on `Issued`.
+
+### Servicing
+
+Four workflows that change what the order contains without changing its status. Each
+still emits exactly one event.
+
+#### `AirOrderAddServices`
+
+```mermaid
+---
+title: "AirOrderAddServices — Issued → Issued (no status change)"
+---
+flowchart LR
+    S(["Issued"]) --> A["airOrderServiceList"] --> B[["airOrderAddServices"]]
+    B -- AirOrderServicesAdded --> T(["Issued<br/>status unchanged"])
+```
+
+#### `AirOrderAddSeats`
+
+```mermaid
+---
+title: "AirOrderAddSeats — Issued → Issued (no status change)"
+---
+flowchart LR
+    S(["Issued"]) --> A["airOrderSeatList"] --> B[["airOrderAddSeats"]]
+    B -- AirOrderSeatsAdded --> T(["Issued<br/>status unchanged"])
+```
+
+#### `AirOrderRemoveServices`
+
+```mermaid
+---
+title: "AirOrderRemoveServices — Issued → Issued (no status change)"
+---
+flowchart LR
+    S(["Issued"]) --> B[["airOrderRemoveServices"]]
+    B -- AirOrderServicesRemoved --> T(["Issued<br/>status unchanged"])
+```
+
+#### `AirOrderRemoveSeats`
+
+```mermaid
+---
+title: "AirOrderRemoveSeats — Issued → Issued (no status change)"
+---
+flowchart LR
+    S(["Issued"]) --> B[["airOrderRemoveSeats"]]
+    B -- AirOrderSeatsRemoved --> T(["Issued<br/>status unchanged"])
+```
+
+Removal needs no listing request: what is already on the order is known.
+
+### Detection — not workflows
+
+Nothing below is invoked as a workflow. Every transition here is **discovered** by an
+`airOrderRetrieve` against the airline (Rule 8), so `airOrderRetrieve` is drawn as the
+request in each of them.
+
+#### `airOrderRetrieve` against a `Pending` order
+
+```mermaid
+---
+title: "Detection on Pending — external issuance and expiry"
+---
+flowchart LR
+    S(["Pending"]) --> R["airOrderRetrieve"]
+    R -- "AirOrderIssuedExternal<br/>issued airline-side, outside the platform" --> A(["Issued"])
+    R -- "AirOrderExpired<br/>payment time limit lapsed" --> B(["Expired<br/>terminal"])
+    R -. "no change: no transition, no event" .-> S
+```
+
+`AirOrderIssueExternal` is the PascalCase name of the top transition. It is a *named
+detection transition*, never a workflow — nobody calls it; it exists so Rule 8 has an
+explicit `(Pending, Issued)` row. Only `Pending` can expire.
+
+#### `airOrderRetrieve` against an `Issued` order — flown states
+
+```mermaid
+---
+title: "Detection on Issued — coupon-derived flown states"
+---
+flowchart LR
+    S(["Issued"]) --> R["airOrderRetrieve<br/>evaluate the coupon set"]
+    R -. "no coupon settled: stays Issued" .-> S
+    R -- "AirOrderAllFlown<br/>every coupon flown" --> A(["AllFlown<br/>terminal EXIT"])
+    R -- "AirOrderAllNoShow<br/>every coupon no_show" --> B(["AllNoShow<br/>terminal EXIT"])
+    R -- "AirOrderSomeFlown<br/>all settled, mixed outcome" --> C(["SomeFlown<br/>terminal EXIT"])
+    R -- "AirOrderPartFlown<br/>some settled, one or more still open" --> D(["PartFlown<br/>transitional, never terminal"])
+    D --> R2["airOrderRetrieve<br/>re-evaluate as coupons resolve"]
+    R2 -- AirOrderAllFlown --> A
+    R2 -- AirOrderAllNoShow --> B
+    R2 -- AirOrderSomeFlown --> C
+```
+
+The three EXIT statuses are valid only when **every** coupon has settled. `PartFlown` is
+the shape of "not yet": it is re-evaluated on each `airOrderRetrieve` and always ends on
+one of the three.
+
+#### `airOrderRetrieve` reporting `Blocked` or `Unknown`
+
+```mermaid
+---
+title: "Detection from any status — Blocked, Unknown, and recovery"
+---
+flowchart LR
+    S(["any status<br/>terminal ones included"]) --> R["airOrderRetrieve"]
+    R -- "AirOrderBlocked<br/>airline reports the order blocked" --> B(["Blocked"])
+    R -- "AirOrderUnknown<br/>response does not map to a known status" --> U(["Unknown"])
+    B --> R2["airOrderRetrieve"]
+    U --> R3["airOrderRetrieve"]
+    R2 -- "AirOrderUnblocked<br/>block cleared" --> P(["the prior status,<br/>restored exactly"])
+    R3 -- "AirOrderRecovered<br/>status mappable again" --> P
+```
+
+Both statuses are universal and non-terminal: either can stem from a temporary error, so
+the prior status MUST be persisted on entry and is the only status recovery may restore.
+
+### Inbound
+
+#### `airOrderChangeNotif`
+
+```mermaid
+---
+title: "airOrderChangeNotif — inbound callback, no status change"
+---
+flowchart LR
+    S(["any non-terminal status"]) --> N["airOrderChangeNotif<br/>pushed by the airline, carries a TYPE"]
+    N -- "AirOrderChangeNotified<br/>carries the same TYPE" --> T(["the same status,<br/>untouched"])
+```
+
+The only trigger in the platform that emits an event without touching the state machine.
+Its `TYPE` enum is below.
 
 ## States
 
@@ -261,8 +498,9 @@ carries exactly one of the following values. None of them transition the state m
 `Issued`**, and a **new order** (new PNR, new ID) is created directly in
 `Issued`. It is modelled as a self-transition on `Issued` because it does not
 change the source order's status; the side effect is the creation of a second
-`Issued` order. Pure state-diagram syntax cannot express the spawned order, hence
-this note is normative.
+`Issued` order. Pure state-diagram syntax cannot express the spawned order — the
+`AirOrderSplit` diagram draws it as a dashed side-effect edge — hence this note is
+normative.
 
 ## Coupon model (scope: flown-state derivation only)
 
@@ -318,8 +556,8 @@ resolve.
    **temporary error**, so neither is terminal: a later `airOrderRetrieve` may return
    the order to the exact state it held before entering them (emitting
    `AirOrderUnblocked` / `AirOrderRecovered`). The prior state MUST therefore be
-   preserved on entry. The diagram draws these edges only against `Pending` and
-   `Issued` for readability; the transition table is normative.
+   preserved on entry. The detection diagram draws these edges from a single
+   *any status* node; the transition table is normative.
 4. **`Expired` is time-driven, discovered by `airOrderRetrieve`.** It results from the
    payment time limit lapsing airline-side, not from a client operation; the lapse is
    *surfaced* to us via `airOrderRetrieve`. Only `Pending` can expire.

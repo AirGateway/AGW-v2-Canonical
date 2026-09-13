@@ -15,6 +15,10 @@ calls things and what it is allowed to do to them.
   statuses, transitional `PartFlown`, and the recoverable `Blocked`/`Unknown`).
 - The **Workflows → Transitions → Events** contract table — the exhaustive,
   normative list of valid `(from, to)` pairs and the event each one emits.
+- **One diagram per workflow**, not a single aggregate: each drawing carries the
+  starting status, the request sequence that fulfils the workflow, the resulting
+  status, and the one event emitted — plus separate drawings for the detection
+  transitions and the inbound callback.
 - The **naming convention**: workflows are `PascalCase` (`AirOrderCreate`),
   requests are `camelCase` (`airOrderCreate`). Because a workflow is named after
   its terminating request, case is the only thing that tells them apart — and it
