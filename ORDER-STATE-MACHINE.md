@@ -66,8 +66,10 @@ whole truth about one workflow and nothing else — the status it must start fro
 Requester request sequence that fulfils it, the status it lands on, and the one event it
 emits.
 
-These diagrams are the two normative tables (§ Workflows → Transitions → Events and
-§ Workflow ↔ request catalogue) drawn. Where a diagram and a table disagree, the table
+These diagrams are the two normative tables ([§ Workflows → Transitions → Events](#workflows--transitions--events)
+and [§ Workflow ↔ request catalogue](#workflow--request-catalogue)) drawn. Every row in
+both tables links to the drawing for its workflow or trigger, and every drawing below is
+reachable from the row that defines it. Where a diagram and a table disagree, the table
 wins.
 
 Shapes carry meaning and are identical in every diagram:
@@ -388,37 +390,38 @@ The authoritative contract. Each row binds a **trigger** to a **transition** and
 **event** it emits. The **Direction** column distinguishes the three kinds of trigger:
 *outbound* (workflows we invoke against the airline), *detection* (airline-side
 outcomes surfaced via `airOrderRetrieve` — **every** detection transition is discovered by an `airOrderRetrieve`, not only `Blocked`/`Unknown`), and *inbound* (callbacks the airline pushes to us).
+Each trigger links to [its diagram](#diagrams--one-per-workflow).
 
 | Workflow / trigger | Direction | From → To | Emitted event |
 |---|---|---|---|
-| `AirOrderCreate` | outbound | start → `Pending` | `AirOrderCreated` |
-| `AirOrderCreateAndIssue` | outbound | start → `Issued` | `AirOrderIssued` |
-| `AirOrderIssue` | outbound | `Pending` → `Issued` | `AirOrderIssued` |
-| `AirOrderCancel` | outbound | `Pending` → `Cancelled` | `AirOrderCancelled` |
-| `AirOrderVoid` | outbound | `Issued` → `Voided` | `AirOrderVoided` |
-| `AirOrderRefund` | outbound | `Issued` → `Refunded` | `AirOrderRefunded` |
-| `AirOrderRebook` | outbound | `Issued` → `Pending` | `AirOrderRebooked` |
-| `AirOrderRebookAndIssue` | outbound | `Issued` → `Issued` | `AirOrderReissued` |
-| `AirOrderSplit` | outbound | `Issued` → `Issued` (+ new order in `Issued`) | `AirOrderSplit` |
-| `AirOrderIssueExternal` — `airOrderRetrieve` (order issued airline-side, outside the platform) | detection | `Pending` → `Issued` | `AirOrderIssuedExternal` |
-| `airOrderRetrieve` (payment time limit lapsed) | detection | `Pending` → `Expired` | `AirOrderExpired` |
-| `airOrderRetrieve` (all coupons flown) | detection | `Issued` → `AllFlown` | `AirOrderAllFlown` |
-| `airOrderRetrieve` (some coupons settled, some still open) | detection | `Issued` → `PartFlown` | `AirOrderPartFlown` |
-| `airOrderRetrieve` (all coupons settled, mixed outcome) | detection | `Issued` → `SomeFlown` | `AirOrderSomeFlown` |
-| `airOrderRetrieve` (all coupons no_show, itinerary elapsed) | detection | `Issued` → `AllNoShow` | `AirOrderAllNoShow` |
-| `airOrderRetrieve` (remaining coupons flown) | detection | `PartFlown` → `AllFlown` | `AirOrderAllFlown` |
-| `airOrderRetrieve` (all coupons settled, mixed outcome) | detection | `PartFlown` → `SomeFlown` | `AirOrderSomeFlown` |
-| `airOrderRetrieve` (remaining coupons no_show) | detection | `PartFlown` → `AllNoShow` | `AirOrderAllNoShow` |
-| `airOrderRetrieve` (airline reports blocked) | detection | *any* → `Blocked` | `AirOrderBlocked` |
-| `airOrderRetrieve` (response unmappable) | detection | *any* → `Unknown` | `AirOrderUnknown` |
-| `airOrderRetrieve` (block cleared / temporary error resolved) | detection | `Blocked` → *prior state* | `AirOrderUnblocked` |
-| `airOrderRetrieve` (state mappable again / temporary error resolved) | detection | `Unknown` → *prior state* | `AirOrderRecovered` |
+| [`AirOrderCreate`](#airordercreate) | outbound | start → `Pending` | `AirOrderCreated` |
+| [`AirOrderCreateAndIssue`](#airordercreateandissue) | outbound | start → `Issued` | `AirOrderIssued` |
+| [`AirOrderIssue`](#airorderissue) | outbound | `Pending` → `Issued` | `AirOrderIssued` |
+| [`AirOrderCancel`](#airordercancel) | outbound | `Pending` → `Cancelled` | `AirOrderCancelled` |
+| [`AirOrderVoid`](#airordervoid) | outbound | `Issued` → `Voided` | `AirOrderVoided` |
+| [`AirOrderRefund`](#airorderrefund) | outbound | `Issued` → `Refunded` | `AirOrderRefunded` |
+| [`AirOrderRebook`](#airorderrebook) | outbound | `Issued` → `Pending` | `AirOrderRebooked` |
+| [`AirOrderRebookAndIssue`](#airorderrebookandissue) | outbound | `Issued` → `Issued` | `AirOrderReissued` |
+| [`AirOrderSplit`](#airordersplit) | outbound | `Issued` → `Issued` (+ new order in `Issued`) | `AirOrderSplit` |
+| [`AirOrderIssueExternal`](#airorderretrieve-against-a-pending-order) — `airOrderRetrieve` (order issued airline-side, outside the platform) | detection | `Pending` → `Issued` | `AirOrderIssuedExternal` |
+| [`airOrderRetrieve`](#airorderretrieve-against-a-pending-order) (payment time limit lapsed) | detection | `Pending` → `Expired` | `AirOrderExpired` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (all coupons flown) | detection | `Issued` → `AllFlown` | `AirOrderAllFlown` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (some coupons settled, some still open) | detection | `Issued` → `PartFlown` | `AirOrderPartFlown` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (all coupons settled, mixed outcome) | detection | `Issued` → `SomeFlown` | `AirOrderSomeFlown` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (all coupons no_show, itinerary elapsed) | detection | `Issued` → `AllNoShow` | `AirOrderAllNoShow` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (remaining coupons flown) | detection | `PartFlown` → `AllFlown` | `AirOrderAllFlown` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (all coupons settled, mixed outcome) | detection | `PartFlown` → `SomeFlown` | `AirOrderSomeFlown` |
+| [`airOrderRetrieve`](#airorderretrieve-against-an-issued-order--flown-states) (remaining coupons no_show) | detection | `PartFlown` → `AllNoShow` | `AirOrderAllNoShow` |
+| [`airOrderRetrieve`](#airorderretrieve-reporting-blocked-or-unknown) (airline reports blocked) | detection | *any* → `Blocked` | `AirOrderBlocked` |
+| [`airOrderRetrieve`](#airorderretrieve-reporting-blocked-or-unknown) (response unmappable) | detection | *any* → `Unknown` | `AirOrderUnknown` |
+| [`airOrderRetrieve`](#airorderretrieve-reporting-blocked-or-unknown) (block cleared / temporary error resolved) | detection | `Blocked` → *prior state* | `AirOrderUnblocked` |
+| [`airOrderRetrieve`](#airorderretrieve-reporting-blocked-or-unknown) (state mappable again / temporary error resolved) | detection | `Unknown` → *prior state* | `AirOrderRecovered` |
 | `airOrderRetrieve` (no change detected) | detection | *none — state unchanged* | *none* |
-| `AirOrderAddServices` | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderServicesAdded` |
-| `AirOrderAddSeats` | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderSeatsAdded` |
-| `AirOrderRemoveServices` | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderServicesRemoved` |
-| `AirOrderRemoveSeats` | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderSeatsRemoved` |
-| `airOrderChangeNotif` | inbound (airline callback) | *none — no status change* | `AirOrderChangeNotified` (carries `TYPE`) |
+| [`AirOrderAddServices`](#airorderaddservices) | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderServicesAdded` |
+| [`AirOrderAddSeats`](#airorderaddseats) | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderSeatsAdded` |
+| [`AirOrderRemoveServices`](#airorderremoveservices) | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderServicesRemoved` |
+| [`AirOrderRemoveSeats`](#airorderremoveseats) | outbound | `Issued` → `Issued` (servicing, no status change) | `AirOrderSeatsRemoved` |
+| [`airOrderChangeNotif`](#airorderchangenotif) | inbound (airline callback) | *none — no status change* | `AirOrderChangeNotified` (carries `TYPE`) |
 
 Any `(from, to)` pair not in this table is **invalid** and must be rejected.
 
@@ -436,6 +439,8 @@ Notes on the detection rows:
   to make this explicit; it is the common case.
 
 ## `airOrderChangeNotif` — inbound callback
+
+> Drawn in [§ `airOrderChangeNotif`](#airorderchangenotif).
 
 `airOrderChangeNotif` is a callback the **airline sends to us**. It is strictly
 associated with an order but has **no implication on order status** — it never
@@ -494,6 +499,8 @@ carries exactly one of the following values. None of them transition the state m
 
 ## `AirOrderSplit` — structural operation
 
+> Drawn in [§ `AirOrderSplit`](#airordersplit).
+
 `AirOrderSplit` divides one order's passengers into two: the original order **stays
 `Issued`**, and a **new order** (new PNR, new ID) is created directly in
 `Issued`. It is modelled as a self-transition on `Issued` because it does not
@@ -525,7 +532,8 @@ coupon resolves independently to a final value:
 ### Aggregation rule (order flown-state)
 
 The order's flown state is a pure function of its coupon set, evaluated on each
-`airOrderRetrieve`:
+`airOrderRetrieve` — drawn in
+[§ `airOrderRetrieve` against an `Issued` order](#airorderretrieve-against-an-issued-order--flown-states):
 
 | Coupon set | Order state | Terminal? |
 |---|---|---|
@@ -556,8 +564,8 @@ resolve.
    **temporary error**, so neither is terminal: a later `airOrderRetrieve` may return
    the order to the exact state it held before entering them (emitting
    `AirOrderUnblocked` / `AirOrderRecovered`). The prior state MUST therefore be
-   preserved on entry. The detection diagram draws these edges from a single
-   *any status* node; the transition table is normative.
+   preserved on entry. [The detection diagram](#airorderretrieve-reporting-blocked-or-unknown) draws these edges from a
+   single *any status* node; the transition table is normative.
 4. **`Expired` is time-driven, discovered by `airOrderRetrieve`.** It results from the
    payment time limit lapsing airline-side, not from a client operation; the lapse is
    *surfaced* to us via `airOrderRetrieve`. Only `Pending` can expire.
@@ -578,7 +586,10 @@ resolve.
    airline-sourced outcomes — external issuance (`AirOrderIssueExternal`), `Expired`,
    `AllFlown`, `SomeFlown`, `AllNoShow`, `PartFlown`, `Blocked`, `Unknown`, and
    `Blocked`/`Unknown` recovery — are discovered by an `airOrderRetrieve`, never by
-   invoking a workflow. Airline state reported by `airOrderRetrieve` overrides local
+   invoking a workflow — which is why the three detection drawings
+   ([`Pending`](#airorderretrieve-against-a-pending-order), [flown states](#airorderretrieve-against-an-issued-order--flown-states),
+   [`Blocked`/`Unknown`](#airorderretrieve-reporting-blocked-or-unknown)) all name it as their request.
+   Airline state reported by `airOrderRetrieve` overrides local
    state when it maps to a known state; every such override corresponds to a detection
    row in the table.
 9. **A no-change `airOrderRetrieve` is a no-op.** When the retrieve confirms the
@@ -614,23 +625,25 @@ A canonical workflow maps to **one or more** provider requests in the API Reques
 
 The full mapping, in one place. `PascalCase` = canonical workflow, `camelCase` =
 API Requester request. Every workflow's **last** request is its own name in camelCase —
-that is the naming rule, and the case is the only thing distinguishing the two.
+that is the naming rule, and the case is the only thing distinguishing the two. Each
+workflow links to [its diagram](#diagrams--one-per-workflow), where the same sequence is
+drawn.
 
 | Workflow (PascalCase) | Request sequence (camelCase) | Terminating request | Emitted event |
 |---|---|---|---|
-| `AirOrderCreate` | `airShopping` → `airOfferConfirm` → *(opt. `airSeatAvailability`, `airServiceList`)* → `airOrderCreate` | `airOrderCreate` | `AirOrderCreated` |
-| `AirOrderCreateAndIssue` | `airShopping` → `airOfferConfirm` → *(opt. `airSeatAvailability`, `airServiceList`)* → `airOrderCreateAndIssue` | `airOrderCreateAndIssue` | `AirOrderIssued` |
-| `AirOrderIssue` | *(opt. `airOrderReprice`)* → `airOrderIssue` | `airOrderIssue` | `AirOrderIssued` |
-| `AirOrderCancel` | `airOrderCancel` | `airOrderCancel` | `AirOrderCancelled` |
-| `AirOrderVoid` | `airOrderVoidCheck` → `airOrderVoid` | `airOrderVoid` | `AirOrderVoided` |
-| `AirOrderRefund` | `airOrderRefundQuote` → `airOrderRefund` | `airOrderRefund` | `AirOrderRefunded` |
-| `AirOrderRebook` | `airOrderReshop` → `airOrderReshopConfirm` → `airOrderRebook` | `airOrderRebook` | `AirOrderRebooked` |
-| `AirOrderRebookAndIssue` | `airOrderReshop` → `airOrderReshopConfirm` → `airOrderRebookAndIssue` | `airOrderRebookAndIssue` | `AirOrderReissued` |
-| `AirOrderSplit` | `airOrderSplit` | `airOrderSplit` | `AirOrderSplit` |
-| `AirOrderAddServices` | `airOrderServiceList` → `airOrderAddServices` | `airOrderAddServices` | `AirOrderServicesAdded` |
-| `AirOrderAddSeats` | `airOrderSeatList` → `airOrderAddSeats` | `airOrderAddSeats` | `AirOrderSeatsAdded` |
-| `AirOrderRemoveServices` | `airOrderRemoveServices` | `airOrderRemoveServices` | `AirOrderServicesRemoved` |
-| `AirOrderRemoveSeats` | `airOrderRemoveSeats` | `airOrderRemoveSeats` | `AirOrderSeatsRemoved` |
+| [`AirOrderCreate`](#airordercreate) | `airShopping` → `airOfferConfirm` → *(opt. `airSeatAvailability`, `airServiceList`)* → `airOrderCreate` | `airOrderCreate` | `AirOrderCreated` |
+| [`AirOrderCreateAndIssue`](#airordercreateandissue) | `airShopping` → `airOfferConfirm` → *(opt. `airSeatAvailability`, `airServiceList`)* → `airOrderCreateAndIssue` | `airOrderCreateAndIssue` | `AirOrderIssued` |
+| [`AirOrderIssue`](#airorderissue) | *(opt. `airOrderReprice`)* → `airOrderIssue` | `airOrderIssue` | `AirOrderIssued` |
+| [`AirOrderCancel`](#airordercancel) | `airOrderCancel` | `airOrderCancel` | `AirOrderCancelled` |
+| [`AirOrderVoid`](#airordervoid) | `airOrderVoidCheck` → `airOrderVoid` | `airOrderVoid` | `AirOrderVoided` |
+| [`AirOrderRefund`](#airorderrefund) | `airOrderRefundQuote` → `airOrderRefund` | `airOrderRefund` | `AirOrderRefunded` |
+| [`AirOrderRebook`](#airorderrebook) | `airOrderReshop` → `airOrderReshopConfirm` → `airOrderRebook` | `airOrderRebook` | `AirOrderRebooked` |
+| [`AirOrderRebookAndIssue`](#airorderrebookandissue) | `airOrderReshop` → `airOrderReshopConfirm` → `airOrderRebookAndIssue` | `airOrderRebookAndIssue` | `AirOrderReissued` |
+| [`AirOrderSplit`](#airordersplit) | `airOrderSplit` | `airOrderSplit` | `AirOrderSplit` |
+| [`AirOrderAddServices`](#airorderaddservices) | `airOrderServiceList` → `airOrderAddServices` | `airOrderAddServices` | `AirOrderServicesAdded` |
+| [`AirOrderAddSeats`](#airorderaddseats) | `airOrderSeatList` → `airOrderAddSeats` | `airOrderAddSeats` | `AirOrderSeatsAdded` |
+| [`AirOrderRemoveServices`](#airorderremoveservices) | `airOrderRemoveServices` | `airOrderRemoveServices` | `AirOrderServicesRemoved` |
+| [`AirOrderRemoveSeats`](#airorderremoveseats) | `airOrderRemoveSeats` | `airOrderRemoveSeats` | `AirOrderSeatsRemoved` |
 
 Detection and inbound triggers are **not workflows** and have no request sequence of
 their own:
@@ -638,8 +651,14 @@ their own:
 | Trigger | Kind | Case | Emitted event(s) |
 |---|---|---|---|
 | `airOrderRetrieve` | Detection request | camelCase | `AirOrderExpired`, `AirOrderIssuedExternal`, `AirOrderAllFlown`, `AirOrderPartFlown`, `AirOrderSomeFlown`, `AirOrderAllNoShow`, `AirOrderBlocked`, `AirOrderUnknown`, `AirOrderUnblocked`, `AirOrderRecovered` |
-| `airOrderChangeNotif` | Inbound callback | camelCase | `AirOrderChangeNotified` |
-| `AirOrderIssueExternal` | Named detection transition (canonical, never called) | PascalCase | `AirOrderIssuedExternal` |
+| [`airOrderChangeNotif`](#airorderchangenotif) | Inbound callback | camelCase | `AirOrderChangeNotified` |
+| [`AirOrderIssueExternal`](#airorderretrieve-against-a-pending-order) | Named detection transition (canonical, never called) | PascalCase | `AirOrderIssuedExternal` |
+
+Each is drawn in [§ Detection — not workflows](#detection--not-workflows) and
+[§ Inbound](#inbound): [against a `Pending` order](#airorderretrieve-against-a-pending-order),
+[the flown states against an `Issued` order](#airorderretrieve-against-an-issued-order--flown-states),
+[`Blocked`/`Unknown` from any status](#airorderretrieve-reporting-blocked-or-unknown), and
+[`airOrderChangeNotif`](#airorderchangenotif).
 
 Request-only names that never terminate a workflow, and so never have a PascalCase
 counterpart: `airShopping`, `airOfferConfirm`, `airSeatAvailability`, `airServiceList`,
@@ -655,6 +674,8 @@ no entry.
 
 #### `AirOrderCreate` (example)
 
+> Drawn in [§ `AirOrderCreate`](#airordercreate).
+
 Minimal ("fastest") happy-path implementation. Additional optional requests exist and
 may be inserted, but the minimal sequence is three requests:
 
@@ -668,6 +689,8 @@ may be inserted, but the minimal sequence is three requests:
 > means **no order is created** (no state change).
 
 #### `AirOrderCreateAndIssue` (example)
+
+> Drawn in [§ `AirOrderCreateAndIssue`](#airordercreateandissue).
 
 Technically the **same path** as `AirOrderCreate`. The only difference is the final
 request: it includes a **form of payment**, which issues the order immediately and
@@ -683,6 +706,8 @@ lands it directly in `Issued` rather than `Pending`.
 
 #### `AirOrderIssue` (example)
 
+> Drawn in [§ `AirOrderIssue`](#airorderissue).
+
 Issues an unissued (`Pending`) order, moving it to `Issued`. Two steps, the first
 of which is optional:
 
@@ -696,6 +721,8 @@ of which is optional:
 
 #### `AirOrderVoid` (example)
 
+> Drawn in [§ `AirOrderVoid`](#airordervoid).
+
 Two required steps:
 
 | Provider | Request sequence | Success condition | Emits |
@@ -706,6 +733,8 @@ Two required steps:
 > Both steps required; an incomplete sequence means no state change (order stays `Issued`).
 
 #### `AirOrderRebook` (example)
+
+> Drawn in [§ `AirOrderRebook`](#airorderrebook).
 
 Three required steps (named after its last request, per the naming rule):
 
@@ -719,6 +748,8 @@ Three required steps (named after its last request, per the naming rule):
 
 #### `AirOrderAddServices` (example)
 
+> Drawn in [§ `AirOrderAddServices`](#airorderaddservices).
+
 Servicing operation on an already-issued order. **No state implication** — the order is
 `Issued` and remains `Issued`. Two requests:
 
@@ -730,6 +761,8 @@ Servicing operation on an already-issued order. **No state implication** — the
 > incomplete sequence means no services are added (and, as always, no state change).
 
 #### `AirOrderAddSeats` (example)
+
+> Drawn in [§ `AirOrderAddSeats`](#airorderaddseats).
 
 Same shape as `AirOrderAddServices`, for seats. **No state implication** — order is
 `Issued` and remains `Issued`. Two requests:
@@ -743,6 +776,8 @@ Same shape as `AirOrderAddServices`, for seats. **No state implication** — ord
 
 #### `AirOrderRemoveServices` (example)
 
+> Drawn in [§ `AirOrderRemoveServices`](#airorderremoveservices).
+
 Remove counterpart of `AirOrderAddServices`. **No state implication** — stays `Issued`.
 
 | Provider | Request sequence | Success condition | Emits |
@@ -753,6 +788,8 @@ Remove counterpart of `AirOrderAddServices`. **No state implication** — stays 
 
 #### `AirOrderRemoveSeats` (example)
 
+> Drawn in [§ `AirOrderRemoveSeats`](#airorderremoveseats).
+
 Remove counterpart of `AirOrderAddSeats`. **No state implication** — stays `Issued`.
 
 | Provider | Request sequence | Success condition | Emits |
@@ -762,6 +799,8 @@ Remove counterpart of `AirOrderAddSeats`. **No state implication** — stays `Is
 > Self-transition on `Issued` (no status change); emits `AirOrderSeatsRemoved`.
 
 #### `AirOrderSplit` (example)
+
+> Drawn in [§ `AirOrderSplit`](#airordersplit).
 
 Single-request workflow (the request is the workflow name in camelCase, per the naming
 rule). See the
@@ -777,6 +816,8 @@ order is spawned.
 
 #### `AirOrderCancel` (example)
 
+> Drawn in [§ `AirOrderCancel`](#airordercancel).
+
 Single-request workflow; only valid on a `Pending` order.
 
 | Provider | Request sequence | Success condition | Emits |
@@ -787,6 +828,8 @@ Single-request workflow; only valid on a `Pending` order.
 > means no state change (order stays `Pending`).
 
 #### `AirOrderRebookAndIssue` (example)
+
+> Drawn in [§ `AirOrderRebookAndIssue`](#airorderrebookandissue).
 
 Same path as `AirOrderRebook`, but the final request issues the order — landing it in
 `Issued` instead of `Pending`.
@@ -799,6 +842,8 @@ Same path as `AirOrderRebook`, but the final request issues the order — landin
 > Same reshop/offer-confirm steps as `AirOrderRebook`; only the final request differs.
 
 #### `AirOrderRefund` (example)
+
+> Drawn in [§ `AirOrderRefund`](#airorderrefund).
 
 Two required steps (workflow named after its last request, per the naming rule):
 
