@@ -1,8 +1,9 @@
 # AGW Platform — Canonical Specs
 
-This repository holds the **single source of truth** for six platform-wide
+This repository holds the **single source of truth** for seven platform-wide
 contracts: order **states, workflows, and events**, proposal **statuses and
 transitions**, the **traveller and company profiles** an agency curates, the
+**remark template language** an agency writes its own PNR lines in, the
 **identifier policy** governing every id the API returns, the **namespace
 and naming policy** governing what the API calls things in the first place, and
 the **presentation policy** governing how a front end puts an item in front of an
@@ -92,6 +93,33 @@ calls things, what it is allowed to do to them, and how an agent sees them.
 - The **namespace decision**: profiles live under `/v2/profiles`, outside
   `air`, because no airline is involved in creating one.
 
+## [REMARKS.md](REMARKS.md) — the remark template language
+
+- The rule: **a remark is the agency's own text, carried on an order.** The platform
+  supplies a language and fills in what it already knows; it never decides what a
+  remark says and never reformats it. A template's line breaks are the PNR's.
+- The **two kinds** — `agencyRemarks` and `companyRemarks`, at most one of each per
+  order, same language and same wire shape, differing only in where the templates come
+  from. **Company templates are authored by the agency itself** in Profiles, which is
+  why the grammar is normative and deliberately small.
+- The **closed type set** (`str`, `int`, `float`, `list`, and the bare label) and the
+  **closed autofill token set** — `origin`, `destination`, `travelerReference`,
+  `number`, and **no others**. Adding one is a spec change.
+- **`float` arity is the discriminator**: `float(2)` is two decimal places,
+  `float(2,5)` is a length range. Deliberate, and not to be harmonised away.
+- The **rendering contract**, five exhaustive rules — and the one that matters:
+  **the line is the unit, not the field.** A field line renders only if *every* field
+  on it is filled, so `?` and a bare field behave identically and only `!` changes
+  anything, by gating the save.
+- **A `#` comment line is exported**, not hidden from the provider. The BookingPad
+  hint that says otherwise is tracked as non-conformance.
+- **`template` is captured when the agent fills it**, never re-resolved from the live
+  template list, and `variables` keys are rehydration hints matched exactly then
+  positionally — not identity.
+- **Known non-conformance** — the ten BookingPad v1 autofill tokens v2 silently turns
+  into hand-typed text fields, v1's implicit passenger loop, and v1's literal
+  `#------- CORPORATE REMARKS --------` separator.
+
 ## [IDS.md](IDS.md) — the AGW ID policy
 
 - The rule: **mint handles, pass through real-world identifiers.** Provider
@@ -168,3 +196,5 @@ calls things, what it is allowed to do to them, and how an agent sees them.
   display; never let one drive the other.
 - A screen that shows an item shows it the way [PRESENTATION.md](PRESENTATION.md)
   says, in every surface that mentions it.
+- A remark is **agency text**. No layer reformats, wraps, trims or reorders it, and
+  no layer resolves an autofill token [REMARKS.md](REMARKS.md) does not list.
