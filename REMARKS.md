@@ -44,8 +44,9 @@ Both kinds use **the same language, the same rendering contract and the same wir
 shape**. They differ only in where their templates come from and which body field they
 land in. A layer that special-cases one kind's grammar is non-conformant.
 
-**Company templates are agent-authored.** An agency creates, edits, positions and
-deletes a company's remark templates from BookingPad without AirGateway involvement.
+**Company templates are agent-authored.** An agency creates, edits and deletes a
+company's remark template from BookingPad without AirGateway involvement — at most
+one per company, so there is nothing to position (see *Mandatory templates* below).
 This is why the grammar below is normative and must stay small: the people writing
 templates are travel agents, not integrators.
 
@@ -259,25 +260,82 @@ Remarks are read and replaced on an order at `GET` / `POST /v2/air/orders/{id}/r
 
 ## Mandatory templates
 
-A template may carry `neededOnCreation`.
+A template may carry two independent flags, `neededOnCreation` and `neededOnIssuance`.
+Both default `false`.
 
-- **At most one per list**, per kind. A company has at most one; an agency has at most
-  one. The API refuses a second, and a front end MUST disable the control rather than
-  let the save fail.
-- A mandatory template **pins the selection**: the agent cannot pick a different one,
-  and the booking cannot proceed until its required fields are filled.
+- **A company holds at most one remark, full stop.** Not "at most one mandatory
+  template within a list" — the company's entire list is capped to one row. See
+  [PROFILES.md](PROFILES.md#company-remark-templates). Its one remark may carry
+  either flag, both, or neither.
+- **An agency holds a list, but at most one remark across that whole list may carry
+  either flag.** This is **one combined constraint, not two independent ones**: a
+  second remark cannot take `neededOnIssuance` while a different remark already holds
+  `neededOnCreation`, and vice versa. There is at most one **enforced template** per
+  agency at any time, and if both flags are set they MUST be set on that same one
+  remark. A schema that gives each flag its own uniqueness constraint is
+  non-conformant — it would let two different remarks each hold one flag, which this
+  rule forbids.
+- `neededOnCreation` gates order **creation**: both a plain hold and create-and-issue
+  refuse to proceed without it filled.
+- `neededOnIssuance` gates the **issue** moment specifically: a standalone issue of a
+  previously-held order, and the issue step within create-and-issue. It does not block
+  a plain hold — an order may sit Pending with `neededOnIssuance` unmet, and only the
+  transition to Issued is refused.
+- The API refuses setting either flag `true` on a remark other than the agency's
+  already-enforced one (when one exists), `409`. A front end MUST disable the control
+  rather than let the save fail — offer "require" only on the enforced remark or on a
+  list with none yet, and "release" only on the one currently enforced.
+- A mandatory template **pins the selection** for whichever transition it gates: the
+  agent cannot pick a different one, and that transition cannot proceed until the
+  remark's required fields are filled.
 - The gate MUST distinguish **"no templates configured"** from **"templates not loaded
   yet"**. A remarks gate that passes while the list is loading is a defect: it lets a
-  booking through without a remark the agency requires.
+  transition through without a remark the agency requires.
 - A mandatory company template applies only once a company is picked for the booking.
+
+## Agency remark templates
+
+Unlike a company, an agency's remark list is **curated and unbounded**: many templates,
+ordered, of which at most one may be the agency's enforced one (see *Mandatory
+templates* above). Agents pick from this list at booking time; **managing** it — add,
+edit, delete, duplicate — is a manager-only action, separate from picking.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | UUID | issued | The `public.remarks` primary key, plain — not a minted handle, see [IDS.md](IDS.md). |
+| `name` | string(255) | **yes** | Non-empty. What an agent picks from the list. Trimmed. |
+| `template` | string | no | The `{placeholder:type}` text, **stored verbatim**. Empty is a legitimate configured state (a name-only placeholder), so it is always returned, as `""`. Cleared with `""`, never `null`. |
+| `neededOnCreation` | boolean | no, default `false` | See *Mandatory templates*. |
+| `neededOnIssuance` | boolean | no, default `false` | See *Mandatory templates*. |
+| `position` | integer | no, default `0` | Display order within the agency's list. |
+| `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
+
+| Operation | Path | What it does |
+|---|---|---|
+| `agencyRemarkList` | `GET /v2/agency/remarks` | Every template on the agent's agency, the enforced one first (if any), then `position`, then name. Not paged — an agency holds, in practice, a handful to a few dozen. |
+| `agencyRemarkCreate` | `POST /v2/agency/remarks` | Adds a template. Only `name` is required. **Duplicate** is a client-side affordance, not a separate operation: prefill a create request from an existing template's `name`/`template`, offering neither flag (the enforced-template rule still applies to the copy). |
+| `agencyRemarkRetrieve` | `GET /v2/agency/remarks/{remarkId}` | One template as configured on the agency. |
+| `agencyRemarkUpdate` | `PATCH /v2/agency/remarks/{remarkId}` | Sparse edit; nothing is nullable. Clearing `name` is refused (`422`). |
+| `agencyRemarkDelete` | `DELETE /v2/agency/remarks/{remarkId}` | Detaches the template; hub drops the definition once nothing links to it. Orders already filled in from it keep their own copy of the text. `204`. |
+
+All five sit under `/v2/agency`, session-scoped like `/v2/agency/agents` — no
+agency-id path segment; the agency is resolved from the caller's session. Hub's own
+`/agw/agencies/{agency_id}/remarks` is the same shape with the agency named explicitly
+in the path, since hub has no session to resolve it from.
+
+Read access at booking time is separate and unaffected by this section: the Air
+surface's `AirAgencyRemarkTemplates` operation (`GET /v2/air/agency/remark_templates`)
+remains the read-only listing an agent picks from while booking; the operations above
+are for a manager editing the list itself, e.g. BookingPad's Settings-wheel "Agency
+Remark Templates" manager.
 
 ## Layer contract
 
 | Layer | Obligation |
 |---|---|
-| **hub persistence** | Stores `template`, `variables`, `output` as given. Never re-renders, never reformats. |
-| **AGW API V2** | `agencyRemarks` / `companyRemarks` on order create, create-and-issue, and the order remarks resource. Enforces one `neededOnCreation` per list. |
-| **BookingPad web** | Owns the parser, the four autofill tokens, and the rendering contract above. Company template authoring lives in Profiles. |
+| **hub persistence** | Stores `template`, `variables`, `output` as given. Never re-renders, never reformats. Enforces: at most one remark per company; at most one remark per agency carrying either flag (one combined partial unique index, not two). |
+| **AGW API V2** | `agencyRemarks` / `companyRemarks` on order create, create-and-issue, and the order remarks resource. Enforces `neededOnCreation` at order creation (hold and create-and-issue) and `neededOnIssuance` at the issue moment (standalone issue, and the issue step of create-and-issue). |
+| **BookingPad web** | Owns the parser, the four autofill tokens, and the rendering contract above. Company template authoring lives in Profiles; agency template authoring lives in the Settings-wheel manager, manager-only. |
 | **Traveller app** | Never authors or renders remarks. A remark is agency-internal and MUST NOT be shown to a traveller. |
 | **Tests** | The rendering contract's five rules each have a test. A change to any of them changes this file first. |
 
