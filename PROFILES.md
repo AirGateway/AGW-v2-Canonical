@@ -160,51 +160,56 @@ and MUST NOT be read or written by any new code.
 
 ### Company remark templates
 
-The texts an agent fills in at booking time so the PNR carries the corporate's cost
-centre, project code or account reference. A company holds a **list** of them; an order
-carries **at most one** company remark, picked from that list — exactly as agency remarks
-work, with the agency's own list.
+The text an agent fills in at booking time so the PNR carries the corporate's cost
+centre, project code or account reference. **A company holds at most one**, full stop
+— not a list. This is deliberately stricter than the agency's own remark list (see
+[REMARKS.md](REMARKS.md#agency-remark-templates)): a corporate has one standing
+account/cost-centre convention, not several to choose between, so there is nothing to
+pick from and nothing to order.
 
 They live under the company, not under `/v2/agency`: NAMING.md places *the agency's*
 remark templates under `/v2/agency` because they are agency configuration, identical for
-every corporate; a company's templates are attached to that company, travel with it, and
-are gone when it is. The container is named for the container.
+every corporate; a company's template is attached to that company, travels with it, and
+is gone when it is. The container is named for the container.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | UUID | issued | The `public.remarks` primary key, plain — not a minted handle, see [IDS.md](IDS.md). |
-| `name` | string(255) | **yes** | Non-empty. What an agent picks from the list. Trimmed. |
+| `name` | string(255) | **yes** | Non-empty. Trimmed. |
 | `template` | string | no | The `{placeholder:type}` text, **stored verbatim** — its placeholders and line breaks ARE the remark. Empty is a legitimate configured state (a name-only placeholder), so it is always returned, as `""`. Cleared with `""`, never `null`. |
-| `neededOnCreation` | boolean | no, default `false` | The one template an agent must fill in before an order for this company can be created. **At most one per company**, enforced by hub with a partial unique index. |
-| `position` | integer | no, default `0` | Display order within the company's list. Surfaced here — unlike on the agency template listing — because this surface edits the list, and an editor that cannot see the order cannot change it. |
+| `neededOnCreation` | boolean | no, default `false` | Must be filled before an order for this company can be **created** (hold or create-and-issue). See [REMARKS.md](REMARKS.md#mandatory-templates). |
+| `neededOnIssuance` | boolean | no, default `false` | Must be filled before an order for this company can be **issued** — a standalone issue, or the issue step of create-and-issue. Independent of `neededOnCreation`; both may be set on the same remark. See [REMARKS.md](REMARKS.md#mandatory-templates). |
+| `position` | integer | always `0` | Response-only, kept only so the wire shape matches the agency template's. Not accepted on create/update: with at most one remark, there is nothing to position. |
 | `createdAt` / `updatedAt` | timestamp | issued | Server-set. |
 
 | Operation | Path | What it does |
 |---|---|---|
-| `profileCompanyRemarkList` | `GET /v2/profiles/companies/{id}/remarks` | Every template on the company, the `neededOnCreation` one first, then `position`, then name. **Not paged**: a company holds a handful and the order form needs all of them at once. A company with none answers an empty list. |
-| `profileCompanyRemarkCreate` | `POST /v2/profiles/companies/{id}/remarks` | Adds a template. Only `name` is required. |
-| `profileCompanyRemarkRetrieve` | `GET /v2/profiles/companies/{id}/remarks/{remarkId}` | One template as configured on the company. |
-| `profileCompanyRemarkUpdate` | `PATCH /v2/profiles/companies/{id}/remarks/{remarkId}` | Sparse edit; nothing is nullable. Clearing `name` is refused (`422`) for the same reason a company's is. |
-| `profileCompanyRemarkDelete` | `DELETE /v2/profiles/companies/{id}/remarks/{remarkId}` | Detaches the template; hub drops the definition once nothing links to it. Orders already filled in from it keep their own copy of the text. `204`. |
+| `profileCompanyRemarkList` | `GET /v2/profiles/companies/{id}/remarks` | The company's remark, as a one-item list (or empty). Kept as a list, not a singular resource, so a client that has not yet migrated off the old shape degrades to "one row" rather than breaking. |
+| `profileCompanyRemarkCreate` | `POST /v2/profiles/companies/{id}/remarks` | Adds the company's remark. Only `name` is required. **A second create is a `409`** — see below — never a silent replace. |
+| `profileCompanyRemarkRetrieve` | `GET /v2/profiles/companies/{id}/remarks/{remarkId}` | The remark as configured on the company. |
+| `profileCompanyRemarkUpdate` | `PATCH /v2/profiles/companies/{id}/remarks/{remarkId}` | Sparse edit; nothing is nullable. Clearing `name` is refused (`422`). |
+| `profileCompanyRemarkDelete` | `DELETE /v2/profiles/companies/{id}/remarks/{remarkId}` | Detaches the remark; hub drops the definition once nothing links to it. Orders already filled in from it keep their own copy of the text. `204`. |
 
 Rules, all of which hold on hub's `/agw/companies/{company_id}/remarks` as well:
 
 - **A company of another agency is a `404`, never a `403`** — and never an empty list.
-  A remark attached to a *different* company is a `404` through this one too, so a
-  template cannot be read or edited through a company that does not own it.
-- **A second `neededOnCreation` template is a `409`**, `AGW_profile_remark_mandatory_taken`.
-  It is a conflict with another template's state, not a broken payload: the fix is to
-  release the current one first. Hub answers it as a `422` with a detail naming the
-  rule; agw-api-v2 is the layer that turns that into the `409`, and MUST NOT report it
-  as `AGW_profile_incomplete`.
-- **A client that knows the rule enforces it before the attempt**: a form marking a
-  template required is disabled while another one holds the flag, and the row action
-  offered is the one legal move (require an optional one, release the required one).
-  The `409` stays as the backstop.
-- **On the order**: `companyRemarks.id` MUST be one of the booked company's templates,
-  and `companyRemarks` MUST NOT be sent without `companyID`. When the company has a
-  `neededOnCreation` template, that one MUST be the remark sent. These are the Air
-  surface's rules, restated so a profiles client knows what its list is for.
+  A remark attached to a *different* company is a `404` through this one too, so it
+  cannot be read or edited through a company that does not own it.
+- **A second create is a `409`**, `AGW_profile_remark_mandatory_taken`. This is the
+  company-cardinality rule, not a mandatory-flag conflict — it fires on a plain create
+  with neither flag set, same as one with either set. The fix is to edit or delete the
+  existing remark first, never to add another. Hub answers it as a `422` with a detail
+  naming the rule; agw-api-v2 is the layer that turns that into the `409`, and MUST NOT
+  report it as `AGW_profile_incomplete`.
+- **A client that knows the rule enforces it before the attempt**: "Add remark
+  template" is hidden once the company already has one, not merely disabled with an
+  error waiting behind it. The `409` stays as the backstop.
+- **On the order**: `companyRemarks.id` MUST be the company's remark, and
+  `companyRemarks` MUST NOT be sent without `companyID`. When the company's remark
+  holds `neededOnCreation`, it MUST be the remark sent at creation; when it holds
+  `neededOnIssuance`, it MUST already be the order's stored company remark by the time
+  the order is issued. These are the Air surface's rules, restated so a profiles client
+  knows what its one remark is for.
 - **The order does not name its company on retrieve**, so an order's stored company
   remark cannot be matched back to a template name; it is shown and edited from its own
   stored `template`. Naming the company on the order is tracked separately.
@@ -578,18 +583,22 @@ of guessing. Where hub already has a route, it is marked as such and must not ch
 | `POST /agw/companies` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Add a company. The consumer is derived from `agency_id`, never taken from the caller |
 | `PATCH /agw/companies/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Edit, deactivate, reactivate a company |
 | `DELETE /agw/companies/{id}` | **Exists** — [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42) | Remove a company. `409` while it holds travellers |
-| `GET /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | The company's remark templates, mandatory first. Unpaged. `404` for a foreign company, never an empty list |
-| `POST /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Add a template. `422` `MsgRemarkNeededOnCreationTaken` for a second mandatory one |
-| `GET /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | One template. `404` for a remark attached to another company |
-| `PATCH /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Sparse edit of name, template, flag, position |
+| `GET /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); singular since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | The company's remark as a one-item list. Unpaged. `404` for a foreign company, never an empty list |
+| `POST /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); singular since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | Add the company's remark. `422` `MsgCompanyRemarkAlreadyExists` if one already exists — unconditionally, not only when a flag is being set |
+| `GET /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | The remark. `404` for a remark attached to another company |
+| `PATCH /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); two flags since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | Sparse edit of name, template, `neededOnCreation`, `neededOnIssuance` — no `position` |
 | `DELETE /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Detach; orphaned definition deleted. `204` |
 
 **Every route in the inventory exists.** The listings landed first (they are what a
 picker needs); the traveller writes followed; the status column, the company writes and
 both deletes landed together in [hub#42](https://github.com/AirGateway/hub-api-v2/pull/42); the company remark templates in
-[hub#49](https://github.com/AirGateway/hub-api-v2/pull/49). Nothing under `/v2/profiles` calls a route hub
-does not serve. The admin console's `/admin/companies/{company_id}/remarks` is the same
-service behind a different door and is not scoped by agency; `/v2` never calls it.
+[hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); the company singular-remark rule and the
+`neededOnIssuance` flag in [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55). Nothing under `/v2/profiles`
+calls a route hub does not serve. The admin console's `/admin/companies/{company_id}/remarks`
+is the same service behind a different door and is not scoped by agency; `/v2` never calls it.
+
+The agency's own remark templates are a separate sub-resource, `/agw/agencies/{agency_id}/remarks`,
+under `/v2/agency` rather than `/v2/profiles` — see [REMARKS.md](REMARKS.md#agency-remark-templates).
 
 ### Rules that hold for every route
 
