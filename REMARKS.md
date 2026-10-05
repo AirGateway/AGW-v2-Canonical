@@ -66,7 +66,7 @@ A line is exactly one of these, decided on the **trimmed** line:
 
 | Kind | Recognised by | Shown to the agent | Rendered to output |
 |---|---|---|---|
-| **Block delimiter** | the whole trimmed line is `{{#passengers}}` or `{{/passengers}}` | no | no |
+| **Block delimiter** | the whole trimmed line is `{{#passengers}}`, `{{/passengers}}`, `{{#tickets}}` or `{{/tickets}}` | no | no |
 | **Comment** | starts with `#` | yes, as a note | **yes, verbatim** |
 | **Blank** | empty or whitespace only | yes, as spacing | **no** |
 | **Field line** | contains at least one placeholder | yes, as inputs | conditionally — see [Rendering](#the-rendering-contract) |
@@ -74,8 +74,8 @@ A line is exactly one of these, decided on the **trimmed** line:
 
 Two rules here are load-bearing and easy to get wrong:
 
-- **A block delimiter is only a delimiter on a line of its own.** `{{#passengers}}`
-  appearing inline is not a block — it renders as literal text.
+- **A block delimiter is only a delimiter on a line of its own.** `{{#passengers}}` or
+  `{{#tickets}}` appearing inline is not a block — it renders as literal text.
 - **A comment is exported.** `#` marks a line the agent reads as a note; it does **not**
   hide the line from the provider. A layer that tells an agent otherwise is wrong — see
   [Known non-conformance](#known-non-conformance).
@@ -133,24 +133,58 @@ gating the save. A spec or UI that promises a bare field renders with a gap is w
 A placeholder whose type is one of these is filled by the front end and presented
 **disabled** — the agent sees the value and cannot change it.
 
-The token set is **closed. These four are all of them.**
+The token set is **closed. These five are all of them.**
 
 | Token | Value | Scope |
 |---|---|---|
 | `origin` | IATA code of the **first bound's** departure airport | whole template |
 | `destination` | IATA code of the **first bound's** arrival airport | whole template |
-| `travelerReference` | the passenger's traveler reference | passenger block only |
-| `number` | the passenger's 1-based position | passenger block only |
+| `travelerReference` | in a passenger block, the passenger's traveler reference; in a ticket block, the reference of the passenger the ticket was issued to | loop blocks only |
+| `number` | the 1-based position of the current iteration — the passenger's in a passenger block, the ticket's in a ticket block | loop blocks only |
+| `ticketNumber` | the ticket's number, verbatim as the order carries it | ticket block only |
 
 - Tokens are matched **case-insensitively** (`{o:Origin}` works).
 - **First bound, not final destination.** On a WAW→BUD→WAW round trip,
   `{origin:origin}-{destination:destination}` renders `WAW/BUD`. This is the confirmed
   rule, not an accident: a remark names the outbound the agency sold.
-- Outside a passenger block, `travelerReference` and `number` render empty.
+- Outside a loop block, `travelerReference` and `number` render empty. Outside a ticket
+  block, `ticketNumber` renders empty — so, under rendering rule 3, a line using it
+  there never renders.
 - **Adding a token is a spec change.** A front end MUST NOT resolve a token this table
   does not list; anything else is a text input the agent fills.
 
-### Passenger blocks
+### Loop blocks
+
+A loop block is the language's only flow control: its lines repeat once per item of a
+list the order supplies. There are two, and the set is **closed** — adding one is a spec
+change, like adding a token.
+
+| Block | Delimiters | Repeats once per | Block-scoped tokens | Key suffix |
+|---|---|---|---|---|
+| **Passenger** | `{{#passengers}}` … `{{/passengers}}` | passenger, in passenger order | `travelerReference`, `number` | `-<travelerReference>` |
+| **Ticket** | `{{#tickets}}` … `{{/tickets}}` | issued ticket, in the order's ticket order | `ticketNumber`, `travelerReference`, `number` | `-<ticketNumber>` |
+
+Rules common to both:
+
+- A block MAY contain **several lines**. All of them repeat together, per item.
+- A block with **nothing to iterate emits nothing** — no lines, no variables.
+- Blocks **MUST NOT nest**, either kind inside either kind. A nested block is dropped
+  whole — its delimiters and its lines — and the outer block carries on after it.
+- A close delimiter only closes a block **of its own kind**. One that closes nothing
+  renders as literal text.
+- An **unclosed** block swallows every remaining line of the template and is still
+  expanded. This is defensive, not a feature — a template MUST close its block.
+- A template SHOULD contain at most one block of each kind. Several are expanded
+  independently and each repeats its full list. A passenger block and a ticket block
+  side by side is the normal way to write both.
+
+Inside a block, a field's variable key is suffixed per item: `fare` becomes
+`fare-ADT0`, `fare-ADT1`, … in a passenger block, and `fee` becomes
+`fee-0752400000001`, … in a ticket block (the 1-based position stands in for a ticket
+with no number). Outside a block, the key is the bare label. A template SHOULD NOT use
+the same label in both kinds of block.
+
+#### Passenger blocks
 
 ```
 {{#passengers}}
@@ -158,16 +192,50 @@ RM*PAX/{fare:float(2)}/{ref:travelerReference}
 {{/passengers}}
 ```
 
-- Every line between the delimiters repeats **once per passenger**, in passenger order.
-- A block MAY contain **several lines**. All of them repeat together, per passenger.
-- Blocks **MUST NOT nest**; a nested block's lines are dropped.
-- An **unclosed** block swallows every remaining line of the template and is still
-  expanded. This is defensive, not a feature — a template MUST close its block.
-- A template SHOULD contain at most one block. Several are expanded independently and
-  each repeats the full passenger list.
+#### Ticket blocks
 
-Inside a block, a field's variable key is suffixed with the traveler reference:
-`fare` becomes `fare-ADT0`, `fare-ADT1`, … Outside a block, the key is the bare label.
+```
+{{#tickets}}
+RM*TKT-{tkt:ticketNumber}/{pax:travelerReference}/FEE-{fee:float(2)?}
+{{/tickets}}
+```
+
+Saved on an issued order with two real tickets, a fee typed for the first and left
+empty for the second:
+
+```
+RM*TKT-0752400000001/ADT0/FEE-12.50
+```
+
+with `variables`:
+
+```json
+{
+  "tkt-0752400000001": "0752400000001",
+  "pax-0752400000001": "ADT0",
+  "fee-0752400000001": "12.50"
+}
+```
+
+The second ticket's line vanished under rendering rule 3, exactly as an empty field
+drops a passenger line.
+
+A ticket block iterates the order's **issued tickets** — every document the order
+lists, whatever its type (electronic ticket or EMD), in the order the order lists them — with
+two consequences that are part of the contract, not accidents of an implementation:
+
+- **Fake tickets are skipped.** Some providers return a synthetic ticket number
+  derived from the PNR where no real document was issued (`fakeTicket: true`). A
+  remark exports to the agency's back office, and a number no airline issued has no
+  business there. `number` counts the real tickets only, contiguously from 1.
+- **Tickets exist only after issue.** A remark is rendered when the agent saves it,
+  against the tickets the order carries at that moment. At booking time there are
+  none — an offer has no tickets — and on a held order there are none yet, so a
+  ticket block renders nothing in either case, **including for a `neededOnIssuance`
+  remark**, which is filled before the issue it gates. A remark gains its ticket
+  lines when it is saved on an issued order: the agent edits and re-saves it from the
+  order's Remarks tab. No layer re-renders a remark by itself — see
+  [Layer contract](#layer-contract).
 
 **Duplicate keys share one control.** The same label twice on one line — or in one
 block iteration — is one input rendered once and substituted in both positions.
@@ -242,7 +310,7 @@ A filled remark of either kind serialises to the same object:
 |---|---|
 | `id` | id of the template that was filled |
 | `template` | **the template string as it stood when the agent filled it** |
-| `variables` | flat `label → value` map, per-passenger keys suffixed `-<travelerRef>` |
+| `variables` | flat `label → value` map, per-passenger keys suffixed `-<travelerRef>`, per-ticket keys suffixed `-<ticketNumber>` |
 | `output` | the rendered text |
 
 **`template` is captured at selection time, not re-looked-up.** An agency may edit a
@@ -252,8 +320,8 @@ template list is non-conformant.
 
 **`variables` keys are rehydration hints, not identity.** An order retrieve may renumber
 or omit traveler references, so a reader matches exact keys first, then fills remaining
-per-passenger fields **positionally** from unconsumed keys sharing the same `label-`
-prefix. Keys matching nothing are dropped.
+per-item fields — passenger or ticket — **positionally** from unconsumed keys sharing
+the same `label-` prefix. Keys matching nothing are dropped.
 
 Remarks are read and replaced on an order at `GET` / `POST /v2/air/orders/{id}/remarks`.
 **The POST is a full replacement** — the complete object, never a partial.
@@ -335,7 +403,7 @@ Remark Templates" manager.
 |---|---|
 | **hub persistence** | Stores `template`, `variables`, `output` as given. Never re-renders, never reformats. Enforces: at most one remark per company; at most one remark per agency carrying either flag (one combined partial unique index, not two). |
 | **AGW API V2** | `agencyRemarks` / `companyRemarks` on order create, create-and-issue, and the order remarks resource. Enforces `neededOnCreation` at order creation (hold and create-and-issue) and `neededOnIssuance` at the issue moment (standalone issue, and the issue step of create-and-issue). |
-| **BookingPad web** | Owns the parser, the four autofill tokens, and the rendering contract above. Company template authoring lives in Profiles; agency template authoring lives in the Settings-wheel manager, manager-only. |
+| **BookingPad web** | Owns the parser, the five autofill tokens, both loop blocks, and the rendering contract above. Renders a remark only when the agent saves it — never on its own, e.g. on issue. Company template authoring lives in Profiles; agency template authoring lives in the Settings-wheel manager, manager-only. |
 | **Traveller app** | Never authors or renders remarks. A remark is agency-internal and MUST NOT be shown to a traveller. |
 | **Tests** | The rendering contract's five rules each have a test. A change to any of them changes this file first. |
 
@@ -347,17 +415,27 @@ Deliberate, tracked exceptions. They are to be closed, and they are never preced
 
 BookingPad v1 resolves `psg-index`, `psg-sales-price`, `agent-id`, `agent-custom-id`,
 `agency-id`, `order-id`, `account-id`, `ticketnumber`, `ticketserialnumber` and
-`airlinecodeticket` in addition to the four canonical tokens. BookingPad v2 does not:
-**each becomes a plain text input the agent must type by hand.**
+`airlinecodeticket` in addition to `origin`, `destination`, `travelerReference` and
+`number`. BookingPad v2 does not: **nine of them become plain text inputs the agent must
+type by hand**, and the tenth, `ticketnumber`, becomes the canonical `ticketNumber`
+with ticket-block scope (see below).
 
-Any agency template using one will silently change behaviour on migration — from
-autofilled to agent-typed, with no error. Before an agency moves to v2, its templates
+Any agency template using one will silently change behaviour on migration, with no
+error. Before an agency moves to v2, its templates
 MUST be audited for these ten tokens and either rewritten, or the token promoted into
 the canonical table above by PR.
 
-Three of the ten are worth closing outright rather than promoting: `ticketnumber`,
-`ticketserialnumber` and `airlinecodeticket` only have values after ticketing, while the
-remark form is only editable before it. They cannot be filled in v1 either.
+Three of the ten are not promoted as v1 defined them: `ticketnumber`,
+`ticketserialnumber` and `airlinecodeticket`. In v1 they only ever held the **first**
+ticket, and v1's remark form is only editable before ticketing, so they could not be
+filled there either. The [ticket block](#ticket-blocks) replaces them, one line per
+ticket. Two migration traps follow:
+
+- Tokens match case-insensitively, so v1's `{t:ticketnumber}` **is** the canonical
+  `ticketNumber`. Outside a ticket block it renders empty and its line is dropped —
+  not a text input any more. Move the line into a `{{#tickets}}` block.
+- `ticketserialnumber` and `airlinecodeticket` have no canonical equivalent. Rewrite the
+  line around `ticketNumber`, which carries the whole number.
 
 ### BookingPad v1's implicit passenger loop
 
