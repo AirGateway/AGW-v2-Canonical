@@ -46,7 +46,11 @@ land in. A layer that special-cases one kind's grammar is non-conformant.
 
 **Company templates are agent-authored.** An agency creates, edits and deletes a
 company's remark template from BookingPad without AirGateway involvement — at most
-one per company, so there is nothing to position (see *Mandatory templates* below).
+one per company, so there is nothing to position (see *Mandatory templates* below) and
+**nothing to name: the template carries the company's name**, which hub sets and keeps
+in step with the company (see [PROFILES.md](PROFILES.md#company-remark-templates)).
+An agency's templates are named by whoever writes them, because agents pick from that
+list by name.
 This is why the grammar below is normative and must stay small: the people writing
 templates are travel agents, not integrators.
 
@@ -396,6 +400,25 @@ surface's `AirAgencyRemarkTemplates` operation (`GET /v2/air/agency/remark_templ
 remains the read-only listing an agent picks from while booking; the operations above
 are for a manager editing the list itself, e.g. BookingPad's Settings-wheel "Agency
 Remark Templates" manager.
+
+## Template lists
+
+A list of remark templates — the agency's in the manager screen, a company's in its
+Profiles tab — shows **what a template is, never what it says**. Its columns are, in this
+order:
+
+| Column | Shows |
+|---|---|
+| **Name** | The template's name — for a company, the company's. The edit affordance. |
+| **Lines** | How many lines the template holds, as written: every line counts, blank, comment and loop-delimiter lines included; one trailing line break does not open a new one; an empty template has `0`. |
+| **Required at Book** | Whether `neededOnCreation` is set. |
+| **Required at Issue** | Whether `neededOnIssuance` is set. |
+| *(actions)* | The row's menu: edit, the require/release pair for each flag, delete — and, for the agency's list, duplicate. |
+
+**The template text MUST NOT appear in a list**, in full, truncated or scrolled. A
+template can run to dozens of lines and would turn the list into a wall; its size is
+the useful fact at list level, and the text is one click away in the editor. `position`
+orders the agency's list but is not a column.
 
 ## Layer contract
 
