@@ -167,6 +167,10 @@ centre, project code or account reference. **A company holds at most one**, full
 account/cost-centre convention, not several to choose between, so there is nothing to
 pick from and nothing to order.
 
+**It is named for the company.** One template per company needs no name of its own: its
+`name` is the company's name, set by hub on create and rewritten by hub whenever the
+company is renamed. No client authors it, and no screen asks for it.
+
 They live under the company, not under `/v2/agency`: NAMING.md places *the agency's*
 remark templates under `/v2/agency` because they are agency configuration, identical for
 every corporate; a company's template is attached to that company, travels with it, and
@@ -175,7 +179,7 @@ is gone when it is. The container is named for the container.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | UUID | issued | The `public.remarks` primary key, plain — not a minted handle, see [IDS.md](IDS.md). |
-| `name` | string(255) | **yes** | Non-empty. Trimmed. |
+| `name` | string(255) | response-only | **Always the company's name**, kept in step on every company rename. A `name` sent on create or update is accepted and ignored — deprecated, kept only so older clients still validate. |
 | `template` | string | no | The `{placeholder:type}` text, **stored verbatim** — its placeholders and line breaks ARE the remark. Empty is a legitimate configured state (a name-only placeholder), so it is always returned, as `""`. Cleared with `""`, never `null`. |
 | `neededOnCreation` | boolean | no, default `false` | Must be filled before an order for this company can be **created** (hold or create-and-issue). See [REMARKS.md](REMARKS.md#mandatory-templates). |
 | `neededOnIssuance` | boolean | no, default `false` | Must be filled before an order for this company can be **issued** — a standalone issue, or the issue step of create-and-issue. Independent of `neededOnCreation`; both may be set on the same remark. See [REMARKS.md](REMARKS.md#mandatory-templates). |
@@ -185,9 +189,9 @@ is gone when it is. The container is named for the container.
 | Operation | Path | What it does |
 |---|---|---|
 | `profileCompanyRemarkList` | `GET /v2/profiles/companies/{id}/remarks` | The company's remark, as a one-item list (or empty). Kept as a list, not a singular resource, so a client that has not yet migrated off the old shape degrades to "one row" rather than breaking. |
-| `profileCompanyRemarkCreate` | `POST /v2/profiles/companies/{id}/remarks` | Adds the company's remark. Only `name` is required. **A second create is a `409`** — see below — never a silent replace. |
+| `profileCompanyRemarkCreate` | `POST /v2/profiles/companies/{id}/remarks` | Adds the company's remark. Nothing is required. **A second create is a `409`** — see below — never a silent replace. |
 | `profileCompanyRemarkRetrieve` | `GET /v2/profiles/companies/{id}/remarks/{remarkId}` | The remark as configured on the company. |
-| `profileCompanyRemarkUpdate` | `PATCH /v2/profiles/companies/{id}/remarks/{remarkId}` | Sparse edit; nothing is nullable. Clearing `name` is refused (`422`). |
+| `profileCompanyRemarkUpdate` | `PATCH /v2/profiles/companies/{id}/remarks/{remarkId}` | Sparse edit of `template` and the two flags; nothing is nullable. The name is not editable here — rename the company. |
 | `profileCompanyRemarkDelete` | `DELETE /v2/profiles/companies/{id}/remarks/{remarkId}` | Detaches the remark; hub drops the definition once nothing links to it. Orders already filled in from it keep their own copy of the text. `204`. |
 
 Rules, all of which hold on hub's `/agw/companies/{company_id}/remarks` as well:
@@ -586,7 +590,7 @@ of guessing. Where hub already has a route, it is marked as such and must not ch
 | `GET /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); singular since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | The company's remark as a one-item list. Unpaged. `404` for a foreign company, never an empty list |
 | `POST /agw/companies/{company_id}/remarks` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); singular since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | Add the company's remark. `422` `MsgCompanyRemarkAlreadyExists` if one already exists — unconditionally, not only when a flag is being set |
 | `GET /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | The remark. `404` for a remark attached to another company |
-| `PATCH /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); two flags since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | Sparse edit of name, template, `neededOnCreation`, `neededOnIssuance` — no `position` |
+| `PATCH /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49); two flags since [hub#55](https://github.com/AirGateway/hub-api-v2/pull/55) | Sparse edit of template, `neededOnCreation`, `neededOnIssuance` — no `position`, and no name since [hub#71](https://github.com/AirGateway/hub-api-v2/pull/71): the remark is named for the company, and a company rename cascades onto it |
 | `DELETE /agw/companies/{company_id}/remarks/{remark_id}` | **Exists** — [hub#49](https://github.com/AirGateway/hub-api-v2/pull/49) | Detach; orphaned definition deleted. `204` |
 
 **Every route in the inventory exists.** The listings landed first (they are what a
