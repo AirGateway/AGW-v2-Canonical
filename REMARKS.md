@@ -137,7 +137,7 @@ gating the save. A spec or UI that promises a bare field renders with a gap is w
 A placeholder whose type is one of these is filled by the front end and presented
 **disabled** — the agent sees the value and cannot change it.
 
-The token set is **closed. These fourteen are all of them.** Nine keep the names
+The token set is **closed. These fifteen are all of them.** Nine keep the names
 BookingPad v1 gave them, so a v1 template works unchanged.
 
 | Token | Value | Scope |
@@ -153,7 +153,8 @@ BookingPad v1 gave them, so a v1 template works unchanged.
 | `number` | the 1-based position of the current iteration — the passenger's in a passenger block, the ticket's in a ticket block | loop blocks only |
 | `psg-index` | the passenger's 1-based position, zero-padded to three digits (`001`) — in a ticket block, the ticketed passenger's | loop blocks only |
 | `psg-sales-price` | the passenger's base fare plus taxes, two decimals, no currency (`412.35`) — in a ticket block, the ticketed passenger's | loop blocks only |
-| `ticketNumber` | the ticket's number, verbatim as the order carries it | ticket block only |
+| `ticketNumber` | the ticket's number, verbatim as the order carries it — whatever format the airline returned | ticket block only |
+| `ticket-full-number` | the complete ticket number in one fixed format, `AAA-SSSSSSSSSS` (`057-1438027556`): `airlineCodeTicket`, a dash, `ticketSerialNumber` | ticket block only |
 | `airlineCodeTicket` | the first three digits of the ticket number — the airline's accounting code — separators ignored | ticket block only |
 | `ticketSerialNumber` | the digits after those three, separators ignored | ticket block only |
 
@@ -162,8 +163,8 @@ BookingPad v1 gave them, so a v1 template works unchanged.
   `{origin:origin}-{destination:destination}` renders `WAW/BUD`. This is the confirmed
   rule, not an accident: a remark names the outbound the agency sold.
 - Outside a loop block, `travelerReference`, `number`, `psg-index` and `psg-sales-price`
-  render empty. Outside a ticket block, `ticketNumber`, `airlineCodeTicket` and
-  `ticketSerialNumber` render empty — so, under rendering rule 3, a line using one there
+  render empty. Outside a ticket block, `ticketNumber`, `ticket-full-number`,
+  `airlineCodeTicket` and `ticketSerialNumber` render empty — so, under rendering rule 3, a line using one there
   never renders.
 - **The agent tokens describe the agent writing the remark**, at the moment they write
   it. Editing a stored remark keeps its stored values (see *The wire shape*), so a
@@ -176,9 +177,11 @@ BookingPad v1 gave them, so a v1 template works unchanged.
   the displayed (converted) price, falling back to the provider's. A passenger no
   entry covers renders empty.
 - **Ticket numbers are split by digit, not by position.** `057-1438027556`,
-  `057 1438027556` and `0571438027556` all give `057` / `1438027556`; a 14-digit number
-  keeps its last digit in the serial. A value with fewer than four digits gives
-  neither.
+  `057 1438027556` and `0571438027556` all give `057` / `1438027556` — and
+  `ticket-full-number` `057-1438027556`; a 14-digit number keeps its last digit in the
+  serial. A value with fewer than four digits gives none of the three. Use
+  `ticket-full-number` when the back office expects one format; `ticketNumber` passes
+  on the airline's.
 - **Adding a token is a spec change.** A front end MUST NOT resolve a token this table
   does not list; anything else is a text input the agent fills.
 
@@ -191,7 +194,7 @@ change, like adding a token.
 | Block | Delimiters | Repeats once per | Block-scoped tokens | Key suffix |
 |---|---|---|---|---|
 | **Passenger** | `{{#passengers}}` … `{{/passengers}}` | passenger, in passenger order | `travelerReference`, `number`, `psg-index`, `psg-sales-price` | `-<travelerReference>` |
-| **Ticket** | `{{#tickets}}` … `{{/tickets}}` | issued ticket, in the order's ticket order | `ticketNumber`, `airlineCodeTicket`, `ticketSerialNumber`, `travelerReference`, `number`, `psg-index`, `psg-sales-price` | `-<ticketNumber>` |
+| **Ticket** | `{{#tickets}}` … `{{/tickets}}` | issued ticket, in the order's ticket order | `ticketNumber`, `ticket-full-number`, `airlineCodeTicket`, `ticketSerialNumber`, `travelerReference`, `number`, `psg-index`, `psg-sales-price` | `-<ticketNumber>` |
 
 Rules common to both:
 
@@ -451,7 +454,7 @@ orders the agency's list but is not a column.
 |---|---|
 | **hub persistence** | Stores `template`, `variables`, `output` as given. Never re-renders, never reformats. Enforces: at most one remark per company; at most one remark per agency carrying either flag (one combined partial unique index, not two). |
 | **AGW API V2** | `agencyRemarks` / `companyRemarks` on order create, create-and-issue, and the order remarks resource. Enforces `neededOnCreation` at order creation (hold and create-and-issue) and `neededOnIssuance` at the issue moment (standalone issue, and the issue step of create-and-issue). |
-| **BookingPad web** | Owns the parser, the fourteen autofill tokens, both loop blocks, and the rendering contract above. Renders a remark only when the agent saves it — never on its own, e.g. on issue. Company template authoring lives in Profiles; agency template authoring lives in the Settings-wheel manager, manager-only. |
+| **BookingPad web** | Owns the parser, the fifteen autofill tokens, both loop blocks, and the rendering contract above. Renders a remark only when the agent saves it — never on its own, e.g. on issue. Company template authoring lives in Profiles; agency template authoring lives in the Settings-wheel manager, manager-only. |
 | **Traveller app** | Never authors or renders remarks. A remark is agency-internal and MUST NOT be shown to a traveller. |
 | **Tests** | The rendering contract's five rules each have a test. A change to any of them changes this file first. |
 
@@ -479,11 +482,28 @@ behaviours do not carry over:
 
 ### BookingPad v1's implicit passenger loop
 
-v1 treats any line containing `psg-index` as a passenger loop without delimiters, repeats
-**one line only**, and requires the passenger-identifying field to be last on the line.
-v2 supports neither the implicit form nor its positional rule, and does support
-multi-line blocks. Templates relying on the implicit loop MUST be rewritten with explicit
-`{{#passengers}}` delimiters.
+v1 repeated a line once per passenger **by itself** whenever it contained `psg-index`,
+repeated that one line only, and required the passenger-identifying field to be last on
+it. v2 has no implicit repetition and no positional rule: **repeating is always
+explicit**. Migrating such a template means wrapping the line in a passenger block —
+nothing else in the line changes:
+
+```
+v1                                         v2
+RM*BOOKINGPAD                              RM*BOOKINGPAD
+RM*PAX{i:psg-index}/{p:psg-sales-price}    {{#passengers}}
+                                           RM*PAX{i:psg-index}/{p:psg-sales-price}
+                                           {{/passengers}}
+```
+
+Both send `RM*BOOKINGPAD`, `RM*PAX001/350.25`, `RM*PAX002/350.25` for two passengers.
+This is the endorsed migration, not a workaround: the delimiters state which lines
+repeat, a block may hold several lines, and a whole-booking line can never repeat by
+accident. Left unwrapped, the line's passenger tokens are out of scope, render empty,
+and the line is dropped — so a passenger line missing from a sent remark is almost
+always a missing `{{#passengers}}`. Ticket lines migrate the same way, into
+`{{#tickets}}`. Front ends MUST explain this to template authors where they write
+templates (BookingPad's Template guide does).
 
 ### The company template hint contradicts the rendering contract
 
