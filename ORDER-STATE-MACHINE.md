@@ -145,14 +145,19 @@ flowchart LR
 
 ```mermaid
 ---
-title: "AirOrderCancel — Pending → Cancelled"
+title: "AirOrderCancel — Pending → Cancelled, or Issued → Cancelled to a voucher"
 ---
 flowchart LR
     S(["Pending"]) --> C[["airOrderCancel"]]
+    I(["Issued"]) --> V[["airOrderCancel<br/>value kept as a voucher"]]
     C -- AirOrderCancelled --> T(["Cancelled<br/>terminal"])
+    V -- AirOrderCancelled --> T
 ```
 
-Cancellation applies to an order that was never issued. An issued order is ended by
+Cancellation applies to an order that was never issued, and to an issued order cancelled
+**to a voucher**: the airline keeps the order's value as credit for the traveller instead
+of refunding it. Both emit `AirOrderCancelled`; the voucher is recorded as the event's
+transaction type, which is what tells the two apart. Any other issued order is ended by
 `AirOrderVoid` or `AirOrderRefund`, never by `AirOrderCancel`.
 
 #### `AirOrderVoid`
@@ -373,7 +378,7 @@ coupon-level validation is what makes them terminal.
 |---|---|---|
 | `Pending` | Entry / active | Order created but not yet issued. Awaiting ticketing/payment within the time limit. |
 | `Issued` | Active | Order issued and held by the airline. The main operational state and central hub. |
-| `Cancelled` | Terminal | Order cancelled before issuance via `AirOrderCancel`. |
+| `Cancelled` | Terminal | Order cancelled via `AirOrderCancel`: before issuance, or after it to a voucher (the airline keeps the value as credit). |
 | `Expired` | Terminal | Payment time limit lapsed while `Pending`. Time-driven, airline-side; surfaced via `airOrderRetrieve`. |
 | `Voided` | Terminal | Issued order voided via `AirOrderVoid`. |
 | `Refunded` | Terminal | Issued order refunded via `AirOrderRefund`. |
@@ -398,6 +403,7 @@ Each trigger links to [its diagram](#diagrams--one-per-workflow).
 | [`AirOrderCreateAndIssue`](#airordercreateandissue) | outbound | start → `Issued` | `AirOrderIssued` |
 | [`AirOrderIssue`](#airorderissue) | outbound | `Pending` → `Issued` | `AirOrderIssued` |
 | [`AirOrderCancel`](#airordercancel) | outbound | `Pending` → `Cancelled` | `AirOrderCancelled` |
+| [`AirOrderCancel`](#airordercancel) (to a voucher) | outbound | `Issued` → `Cancelled` | `AirOrderCancelled` (transaction type voucher) |
 | [`AirOrderVoid`](#airordervoid) | outbound | `Issued` → `Voided` | `AirOrderVoided` |
 | [`AirOrderRefund`](#airorderrefund) | outbound | `Issued` → `Refunded` | `AirOrderRefunded` |
 | [`AirOrderRebook`](#airorderrebook) | outbound | `Issued` → `Pending` | `AirOrderRebooked` |
@@ -818,14 +824,17 @@ order is spawned.
 
 > Drawn in [§ `AirOrderCancel`](#airordercancel).
 
-Single-request workflow; only valid on a `Pending` order.
+Single-request workflow; valid on a `Pending` order, and on an `Issued` order cancelled
+to a voucher, where the request carries the voucher option.
 
 | Provider | Request sequence | Success condition | Emits |
 |---|---|---|---|
 | `PROVIDER_TEMPLATE` | 1. `airOrderCancel` (single request) | `airOrderCancel` returns OK | `AirOrderCancelled` |
+| `PROVIDER_TEMPLATE` (to a voucher) | 1. `airOrderCancel` (single request, voucher option) | `airOrderCancel` returns OK | `AirOrderCancelled` (transaction type voucher) |
 
-> Collapses to the canonical transition `pending → cancelled`. An incomplete request
-> means no state change (order stays `Pending`).
+> Collapses to the canonical transition `pending → cancelled`, or `issued → cancelled`
+> for a voucher cancellation. An incomplete request means no state change (order stays
+> `Pending` or `Issued`).
 
 #### `AirOrderRebookAndIssue` (example)
 
@@ -906,7 +915,8 @@ flowchart TB
   invent intermediate/cosmetic statuses. Render derived views (e.g. "actionable",
   "closed") as presentation groupings over the 12 states. Treat `AirOrderChangeNotified`
   as informational, not a status change.
-- **Tests.** Cover both entry points, every listed transition, terminal-state finality,
+- **Tests.** Cover both entry points, every listed transition (including the voucher
+  cancellation, `Issued` → `Cancelled`), terminal-state finality,
   `Blocked`/`Unknown` arriving from a terminal state **and recovering back to it**
   (prior-state restoration, including from non-terminal states), external issuance
   (`AirOrderIssueExternal`: `Pending` → `Issued` by detection), the no-op retrieve
