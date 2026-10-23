@@ -28,7 +28,7 @@ makes the thing unquotable. The pair is the unit.
 | **User** (agency agent) | the AGW user id (`id` from `agencyAgentList`) | **hover** | the user's full name — see *Known non-conformance* |
 | **Proposal** | the proposal id (`id`) | **link** | the proposal in Proposals — `/proposals/:proposalId` |
 | **Company** (profile) | the company **name** — see *Known non-conformance* | **link** | the company's page in Profiles — `/profiles/company/:companyId` |
-| **Traveller** (profile) | the traveller's **full name** — see *Known non-conformance* | **link** | the Profiles roster with that profile open — `/profiles/traveller?traveller=:travellerId` |
+| **Traveller** (profile) | the traveller's **full name** — see *Known non-conformance* | **link** | the traveller's page, which is also where the profile is edited — `/profiles/traveller/:travellerId` |
 
 More items will be added here. One item is one row; see *Adding an item*.
 
@@ -81,7 +81,7 @@ gap. To add one:
 
 | Layer | What it owes |
 |---|---|
-| **`bookingpad-app-v2`** (Angular, the BookingPad web GUI) | The canonical implementation. Routes are `/orders/:orderId` (`features/orders/orders.routes.ts`), `/proposals/:proposalId` (`features/proposals/proposals.routes.ts`), `/profiles/company/:companyId` and `/profiles/traveller?traveller=:travellerId` (`features/profiles/profiles.routes.ts` — a traveller has no page of its own; the roster opens its profile dialog); link with `routerLink`, never a manual string. |
+| **`bookingpad-app-v2`** (Angular, the BookingPad web GUI) | The canonical implementation. Routes are `/orders/:orderId` (`features/orders/orders.routes.ts`), `/proposals/:proposalId` (`features/proposals/proposals.routes.ts`), `/profiles/company/:companyId` and `/profiles/traveller/:travellerId` (`features/profiles/profiles.routes.ts` — a traveller's page is their form: the profile is read and edited in one place; an older `/profiles/traveller?traveller=:travellerId` link is redirected to it); link with `routerLink`, never a manual string. |
 | **`agw-bp-app-v2`** (Expo, the BookingPad mobile app) | The same pairs, with the same identifiers. Where the mobile app has no screen for the item, it links out to the BookingPad web app through its configured base URL. |
 | **`bp-traveler-app`** | The same pairs for whatever it shows a traveller, minus anything a traveller has no business seeing. Agency-internal ids — the AGW user id above — are not traveller-facing. |
 | **AGW API V2** | Returns the identifiers the table names, under the names it names them by. A front end never derives, formats or prettifies an id to display it; see [IDS.md](IDS.md). |
