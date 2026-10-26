@@ -26,6 +26,7 @@ makes the thing unquotable. The pair is the unit.
 |---|---|---|---|
 | **Order** | the AGW order id (`orderID`) | **link** | the order in BookingPad — `/orders/:orderId` |
 | **User** (agency agent) | the AGW user id (`id` from `agencyAgentList`) | **hover** | the user's full name — see *Known non-conformance* |
+| **Agency** | the agency **name** (`agency` on an order) — the name is how the platform addresses an agency (`Ag-Agency`) | none on an order yet — see *Known non-conformance* | — |
 | **Proposal** | the proposal id (`id`) | **link** | the proposal in Proposals — `/proposals/:proposalId` |
 | **Company** (profile) | the company **name** — see *Known non-conformance* | **link** | the company's page in Profiles — `/profiles/company/:companyId` |
 | **Traveller** (profile) | the traveller's **full name** — see *Known non-conformance* | **link** | the Profiles roster with that profile open — `/profiles/traveller?traveller=:travellerId` |
@@ -94,3 +95,5 @@ Deliberate, tracked exceptions. Each is to be closed. **None is precedent.**
 |---|---|
 | **Company and Traveller show a name, not their id.** Profile ids are unprefixed UUIDs ([IDS.md](IDS.md) — the `public.companies` / `public.travelers` primary keys, deliberately not minted handles), and nobody quotes one to an airline or pastes one into a ticket; a UUID as the visible text would make every roster mention unreadable and quotable of nothing. The name is shown and the id travels in the link target and the accessible name (`aria-label` names the id), so it stays copyable. Closing this is an IDS decision — prefixed profile handles — not a front-end one. | Open, deliberate |
 | **A user's hover cannot show a full name, because no agent has one.** Hub's `agents` table holds an email and nothing else human-readable, so `agencyAgentList` returns `id`, `email`, `role` and `active` — and `email` is the whole of what any surface can reveal. Until hub gains a name field, the hover shows the **email**, which is the closest thing to an identity the platform has. Closing this is a hub schema change, not an API one. | Open |
+| **An order shows its agency as plain text, with no link.** The order carries the agency's name (`agency`) but not its id. The agency's page in BookingPad (`/management/subagencies/:id`) needs that id, and only managers can open it. Closing this needs the agency id on the order, and an agency page every agent who can see the order may open. | Open |
+| **An order shows its booking agent as a bare email.** The order names who booked it only by email (`agent`) and carries no AGW user id, so BookingPad shows the email as plain text, with no hover. Closing this is an API change: send the agent's AGW user id beside `agent`. | Open |
