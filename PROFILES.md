@@ -50,6 +50,11 @@ Two consequences are normative:
   corporates may legitimately hold two different people behind one address. Resolving
   such an address across an agency is a **`409`**, never a guess — picking one attaches
   somebody else's trips to this person.
+- **Changing a traveller's email revokes every proposal magic link sent to the old
+  address**, for every proposal of that traveller, in the same write. A link names the
+  address it was sent to, and a corrected typo means the old address may belong to
+  somebody else. Access comes back only with a new send to the new address
+  ([PROPOSALS.md — Traveller access](PROPOSALS.md#traveller-access-email-and-magic-link)).
 
 ## Naming conventions
 
