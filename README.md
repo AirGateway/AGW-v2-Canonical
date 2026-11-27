@@ -51,8 +51,8 @@ calls things, what it is allowed to do to them, and how an agent sees them.
 - **`Pending` means two different things** — proposal `Pending` (the agency owes
   a move) and order `Pending` (held with the airline). The overlap is deliberate
   and the disambiguation rules are normative.
-- **Send is its own operation.** Attaching an order does not send a proposal,
-  which is what makes `Pending` → `Sent` (resend) meaningful.
+- **Send is its own operation.** Attaching an option does not send a proposal,
+  which is what makes resending from `Sent` and `Pending` meaningful.
 - The **6 option statuses**, and why a proposal may carry **more than one**
   `Approved` option.
 - **Three vocabularies meet on a proposal** and must never be mixed: the
@@ -64,6 +64,12 @@ calls things, what it is allowed to do to them, and how an agent sees them.
   flagged seen or unread. Seen is the **agency's, not each agent's**, held as a
   watermark on the entry **id** and never on a timestamp, and moved only by an
   explicit acknowledge — never by reading.
+- **Two kinds of option**: a held **order option**, or an **offer option** stored as
+  a replay record and reshopped each time it is shown. The traveller decides
+  (approve, reject, comment); the **proposals robot** books, issues and releases.
+- **Traveller access by email and magic link**: three traveller emails, a link scoped
+  to one proposal and revoked when the traveller's email changes, opening the
+  travellers web app.
 
 ## [PROFILES.md](PROFILES.md) — traveller and company profiles
 

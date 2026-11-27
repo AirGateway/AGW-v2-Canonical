@@ -12,9 +12,10 @@
 
 ## What a proposal is, and what it is not
 
-A proposal is a **traveller's request for a trip, and the orders an agency attaches to
-it as options**. It is an independent wrapper around orders — **not** a projection of
-them.
+A proposal is a **traveller's request for a trip, and the options an agency attaches
+to it** — held orders, or offers the platform reshops each time they are shown (see
+[Two kinds of option](#two-kinds-of-option)). It is an independent wrapper around
+orders — **not** a projection of them.
 
 This is the single most important rule in this document, and everything below follows
 from it:
@@ -22,15 +23,19 @@ from it:
 - **No proposal status changes because an order changed — with one recorded
   exception.** A proposal moves on an explicit action against the proposal itself: an
   agent takes it, attaches an option, sends it, or cancels it; the traveller approves,
-  asks for changes, or cancels; the sweep expires it. The exception is the ticket: **an
+  rejects every option, asks for changes, or cancels; the sweep expires it. The exception is the ticket: **an
   approved option's order reaching `Issued` confirms the proposal.** See
   [Confirmed follows the ticket](#confirmed-follows-the-ticket) for why that one, and
   only that one, is allowed.
 - **No order status changes because a proposal changed.** Holding, cancelling and
   issuing orders remain workflows in [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md),
-  invoked separately. Nothing in the proposal machine writes an order, ever.
+  invoked separately. Nothing in the proposal machine writes an order, ever. Booking,
+  issuing and releasing the orders behind options is the **proposals robot**'s job, a
+  background task that *invokes* those workflows after a recorded decision (see
+  [The traveller decides, the robot acts](#the-traveller-decides-the-robot-acts)).
 
-A proposal carries several orders (one per attached option), so there is no single order
+A proposal carries several orders (one per attached order option, and one per booked offer
+option), so there is no single order
 status it could mirror even if that were wanted. The two machines run side by side and
 are read together for display.
 
@@ -53,8 +58,8 @@ Proposals live at the **root**, under `/v2/proposals`, and their operations are
 [NAMING.md](NAMING.md); the short form of it is:
 
 **A proposal is a container an agent fills, and a container is named for the container,
-not for what is put inside it.** An agent attaches air orders as options today because
-air is what the platform sells today. The proposal itself has no provider, no offer and
+not for what is put inside it.** An agent attaches air orders and air offers as options
+today because air is what the platform sells today. The proposal itself has no provider, no offer and
 no PNR — it has a traveller, a request, a status, an assignee and a history, and every
 one of those reads identically the day the option attached is a hotel, a rail leg or an
 insurance policy. Naming the container after its current contents would bake today's
@@ -65,8 +70,8 @@ is involved in creating one"*) and already made for the agency roster, whose
 `/v2/air/agency/agents` is deprecated in favour of `/v2/agency/agents`.
 
 Options are a **sub-resource** of a proposal, so their operations are
-`proposalOptionOffer`, `proposalOptionWithdraw` and `proposalOptionDiscard` — namespace,
-resource, verb last — not `proposalOfferOption`.
+`proposalOptionOffer`, `proposalOptionWithdraw`, `proposalOptionDiscard` and
+`proposalOptionReject` — namespace, resource, verb last — not `proposalOfferOption`.
 
 ### `Pending` means two different things, and both are correct
 
@@ -97,8 +102,8 @@ no other value may ever be written to `proposal.status`.
 | Status | Meaning | Waiting on | Terminal |
 |---|---|---|---|
 | `New` | Fresh new traveller-initiated proposal request. | the agency | no |
-| `Open` | Proposal request accepted and/or assigned to an agent. | the agency | no |
-| `Sent` | The proposal has some orders attached (at least one) and has been sent to the traveller for review/approval. | the traveller | no |
+| `Open` | Proposal request accepted and/or assigned to an agent. The agency's draft: options attached here are not shown to the traveller until the proposal is sent. Also where a proposal returns when the traveller has rejected every option. | the agency | no |
+| `Sent` | The proposal has at least one option attached and has been sent to the traveller for review/approval. | the traveller | no |
 | `Pending` | Requires agent action. The traveller has approved one, or added comments/detail to get new options. Can be **resent**, which sets it to `Sent` again. | the agency | no |
 | `Expired` | The expiration time of the proposal is due. | — | **yes** |
 | `Cancelled` | The proposal was actively cancelled: by the traveller, or by the **agency** at any time and from any live status — including a cancellation the traveller gave them outside the platform. | — | **yes** |
@@ -115,9 +120,11 @@ alone could not: **is anyone on this?** Without it, a request assigned to an age
 days ago is indistinguishable in the inbox from one that arrived a minute ago, and an
 agency cannot tell an untouched backlog from a busy one.
 
-**`Sent`** — the traveller has something to look at. Note that attaching an order and
-sending are **two separate acts**: an agent assembles up to three options while the
-proposal is still `Open`, then sends once. This is what makes "resend" meaningful.
+**`Sent`** — the traveller has something to look at. Note that attaching an option and
+sending are **two separate acts**: an agent assembles options while the proposal is still
+`Open` — the traveller sees nothing of them — then sends. Every send after the first is a
+**resend**, allowed from `Sent` and from `Pending` (while nothing is `Approved`), and each
+one reaches the traveller again (see [Traveller access](#traveller-access-email-and-magic-link)).
 
 **`Pending`** — the agency owes the traveller a move. Reached two ways, and the status
 alone does not distinguish them (the trail does):
@@ -126,7 +133,8 @@ alone does not distinguish them (the trail does):
 2. the traveller **asked for changes** or added detail → the agent must revise the
    options and resend.
 
-**`Expired`** — the traveller's deadline lapsed with nothing agreed.
+**`Expired`** — nothing was agreed in time: the deadline the agent set lapsed, or every
+live option stopped being valid (see [Deadlines](#deadlines-the-proposals-and-the-options)).
 
 **`Cancelled`** — the engagement was called off on purpose. An *active* decision, which
 is what separates it from `Expired`: being turned down and nobody acting in time are
@@ -164,11 +172,13 @@ stateDiagram-v2
     Open --> Open: proposalAssign (reassign) / OptionOffer / OptionWithdraw
 
     Open --> Sent: proposalSend (needs at least one attached option)
-    Sent --> Sent: proposalOptionOffer / proposalOptionWithdraw
+    Sent --> Sent: proposalOptionOffer / proposalOptionWithdraw / proposalOptionReject
+    Sent --> Sent: proposalSend (RESEND after an edit)
+    Sent --> Open: every option rejected (System)
 
     Sent    --> Pending: proposalApprove (traveller, OR agent recording the traveller's choice)
     Sent    --> Pending: proposalRequestChanges (traveller wants new options)
-    Pending --> Pending: proposalOptionOffer / proposalOptionWithdraw
+    Pending --> Pending: proposalOptionOffer / proposalOptionWithdraw / proposalOptionReject
     Pending --> Sent:    proposalSend (RESEND - only while nothing is Approved)
 
     Pending --> Confirmed: approved option's order reaches Issued (System)
@@ -206,6 +216,10 @@ stateDiagram-v2
         Confirmed FOLLOWS THE TICKET: issuing the approved
         option's order confirms the proposal. The one
         order-driven transition, and one-directional.
+
+        Sent -> Open happens only when a rejection leaves
+        no option Offered or Approved: the ball goes back
+        to the agency, which offers again and resends.
     end note
 
     Confirmed --> [*]
@@ -230,9 +244,13 @@ with `409 Conflict`.
 | `Open` | `Open` | `proposalOptionOffer` / `proposalOptionWithdraw` | Agent | `OptionOffered` / `OptionWithdrawn` |
 | `Open` | `Sent` | `proposalSend` | Agent | `ProposalSent` |
 | `Sent` | `Sent` | `proposalOptionOffer` / `proposalOptionWithdraw` | Agent | `OptionOffered` / `OptionWithdrawn` |
+| `Sent` | `Sent` | `proposalOptionReject` (an option stays `Offered` or `Approved`) | Traveller, Agent (comment required) | `OptionRejected` |
+| `Sent` | `Sent` | `proposalSend` (resend) | Agent | `ProposalSent` (`resend: true`) |
+| `Sent` | `Open` | `proposalOptionReject` leaves no option `Offered` or `Approved` | Traveller, Agent (comment required); the move is System's | `OptionRejected`, then `ProposalReopened` (`reason: AllOptionsRejected`) against `System` |
 | `Sent` | `Pending` | `proposalApprove` | Traveller, Agent (comment required) | `OptionApproved` |
 | `Sent` | `Pending` | `proposalRequestChanges` | Traveller | `ChangesRequested` |
 | `Pending` | `Pending` | `proposalOptionOffer` / `proposalOptionWithdraw` | Agent | `OptionOffered` / `OptionWithdrawn` |
+| `Pending` | `Pending` | `proposalOptionReject` | Traveller, Agent (comment required) | `OptionRejected` |
 | `Pending` | `Sent` | `proposalSend` (resend) | Agent | `ProposalSent` (`resend: true`) |
 | `Pending` | `Confirmed` | an `Approved` option's order reaches `Issued` | System | `ProposalConfirmed` (`trigger: OrderIssued`, `order`, `option`) |
 | `Pending` | `Confirmed` | `proposalConfirm` | Agent | `ProposalConfirmed` |
@@ -248,6 +266,11 @@ with `409 Conflict`.
 
 - **`proposalSend` from `Open` requires at least one option in `Offered`.** Sending an
   empty proposal is not a thing a traveller can review.
+- **`proposalSend` requires the main contact to have an email address**, rejected `422`
+  naming the missing email otherwise. Every send emails the traveller; a proposal that
+  cannot reach anybody is not sent.
+- **`proposalSend` from `Sent` is a resend** and always allowed; it records
+  `ProposalSent` with `resend: true` and reaches the traveller again.
 - **`proposalSend` from `Pending` (resend) is rejected `409` while any option is
   `Approved`.** Resending over an approval would silently discard the traveller's
   decision. Withdraw the approved option first, or confirm.
@@ -259,6 +282,9 @@ with `409 Conflict`.
   The choice is always the traveller's; the scope says who typed it, and an agency-side
   approval **MUST carry a comment** naming the channel the choice arrived through. See
   [Approval is the traveller's decision, either side's to record](#approval-is-the-travellers-decision-either-sides-to-record).
+- **`proposalOptionReject` is open to the traveller *and* to the agency**, on an `Offered`
+  option of a `Sent` or `Pending` proposal, with the same comment rule as approve: an
+  agency-side rejection **MUST carry a comment** naming the channel.
 - **`proposalRequestChanges` is the traveller's alone**, and only from `Sent`. One
   belonging to another traveller is reported **not found**, never forbidden — the two
   must be indistinguishable to a caller guessing ids. The same not-found rule applies to
@@ -325,7 +351,7 @@ proposal and three airline holds it has been told which one to ticket.
 So, exactly as for cancel:
 
 - **The status and the option outcome are the same.** `Sent` → `Pending`, the option
-  `Approved`, its siblings `Rejected`, whichever side entered it.
+  `Approved`, its siblings left `Offered`, whichever side entered it.
 - **The trail says who typed it.** An agency-side approval is `OptionApproved` with the
   agent as actor and `details.on_behalf_of_traveller: true`; the traveller's own carries
   neither.
@@ -374,9 +400,11 @@ before this transition existed. Same guard: at least one option `Approved`.
 
 ### Transitions that deliberately do NOT exist
 
-- **`Sent` → `Open` / `New`.** Withdrawing every option does not walk a proposal back:
-  the traveller has already been shown something, and a status claiming otherwise would
-  lie about the trail. Attach another option and resend, or let it expire.
+- **`Sent` → `New`, and `Sent` → `Open` by withdrawing.** Withdrawing every option does
+  not walk a proposal back: the agency pulled its own options, and nothing the traveller
+  did is recorded. Attach another option and resend, or let it expire. The one way back
+  to `Open` is the **traveller rejecting every option** — then the ball really is with the
+  agency, and `ProposalReopened` says why.
 - **`Pending` → `Expired`.** See the diagram note — the ball is with the agency.
 - **Anything out of a terminal status.** `Confirmed`, `Cancelled` and `Expired` are
   final. A change of mind is a **new proposal**, not a resurrection: the trail of the
@@ -411,7 +439,7 @@ Two guards, both enforced before anything is written:
 ## The 6 option statuses — a DIFFERENT vocabulary
 
 > **These are not proposal statuses and never appear in `proposal.status`.** An option
-> is one attached order; it carries its own status on its own axis. Three vocabularies
+> is one attached order or offer; it carries its own status on its own axis. Three vocabularies
 > meet on a proposal and must never be mixed: the **proposal's** seven statuses above,
 > an **option's** six below, and each backing **order's** own statuses in
 > [ORDER-STATE-MACHINE.md](ORDER-STATE-MACHINE.md). `Expired` exists in all three and
@@ -423,9 +451,9 @@ legitimately out of step while an asynchronous cancel is in flight.
 
 | Status | Meaning |
 |---|---|
-| `Offered` | Attached and choosable. Its backing order is held with the airline in order status `Pending`. |
+| `Offered` | Attached and choosable. An order option's backing order is held with the airline in order status `Pending`; an offer option has no order yet and is reshopped each time it is shown. |
 | `Approved` | The traveller chose this one. **One or more per proposal** — see below. |
-| `Rejected` | The traveller approved others and not this one. Its backing order is cancelled, or on its way to being cancelled. |
+| `Rejected` | The traveller turned this one down (`proposalOptionReject`), or it was still `Offered` when the proposal reached `Confirmed` (not chosen). An order option's backing order is cancelled, or on its way to being cancelled; an offer option has nothing to release. |
 | `RejectionFailed` | As `Rejected`, but releasing the airline hold failed permanently. An agent must intervene; this status exists so that need is visible rather than buried in a job log. |
 | `Withdrawn` | An agent pulled the option back before the traveller acted on it. |
 | `Expired` | The backing order's payment time limit lapsed, or the proposal was cancelled or expired. Reached from `Offered` **and** from `Approved`: a cancelled proposal releases its holds whether or not the traveller had chosen this one. |
@@ -440,9 +468,10 @@ This is a **change from the earlier single-selection model** and it is load-bear
 
 - The partial unique index that enforced *at most one* `Approved` option per proposal is
   **removed**. The service enforces *at least one* on confirm instead.
-- `proposalApprove` takes a **list** of option ids, applied in one statement. Every
-  offered sibling not in that list moves to `Rejected` in the same statement, so there is
-  never a moment when some options are approved while others are still on offer.
+- `proposalApprove` takes a **list** of option ids, applied in one statement. Offered
+  siblings not in that list **stay `Offered`, with their holds**, while the proposal is
+  `Pending`. They move to `Rejected` only when the proposal reaches `Confirmed` — if
+  issuing the chosen option fails, the alternatives are still there to fall back on.
 - Approving is **not** incremental: a second `proposalApprove` replaces the selection
   wholesale rather than adding to it. Two calls that each approve one option leave one
   approved, not two — which is why the operation takes a list.
@@ -453,9 +482,10 @@ This is a **change from the earlier single-selection model** and it is load-bear
 |---|---|---|
 | — | `Offered` | `proposalOptionOffer` |
 | `Offered` | `Approved` | `proposalApprove` names this option |
-| `Offered` | `Rejected` | `proposalApprove` does **not** name this option |
+| `Offered` | `Rejected` | `proposalOptionReject` names this option |
+| `Offered` | `Rejected` | the proposal reaches `Confirmed` with this option still `Offered` (not chosen) |
 | `Offered` | `Withdrawn` | `proposalOptionWithdraw` |
-| `Offered` | `Expired` | `proposalCancel`, the expiry sweep, or the backing order's payment TTL lapsing |
+| `Offered` | `Expired` | `proposalCancel`, the expiry sweep, or — for an order option — the backing order's payment TTL lapsing |
 | `Approved` | `Expired` | `proposalCancel` — the proposal was called off after this option was chosen, so its hold is released |
 | `Approved` | `Rejected` | a later `proposalApprove` drops it from the selection |
 | `Approved` | `Withdrawn` | `proposalOptionWithdraw` — the only way to undo an approval, and it returns the proposal to a resendable state |
@@ -464,17 +494,78 @@ This is a **change from the earlier single-selection model** and it is load-bear
 ### Rules on attaching an option
 
 - The proposal MUST be in `New`, `Open`, `Sent` or `Pending`. Terminal is `409`.
-- The order MUST exist, belong to the **same agency** as the proposal, still be **held**
-  (order status `Pending`), and not already back another option. Each is checked
-  explicitly, so a rejection says which rule it broke rather than surfacing a database
-  error.
-- **At most 3 offered options per proposal.** Each is a real airline hold consuming
+- For an **order option**, the order MUST exist, belong to the **same agency** as the
+  proposal, still be **held** (order status `Pending`), and not already back another
+  option. Each is checked explicitly, so a rejection says which rule it broke rather than
+  surfacing a database error.
+- **At most 3 offered order options per proposal.** Each is a real airline hold consuming
   inventory and possibly attracting a fee, so the number is bounded rather than left to
-  whoever is filling the proposal.
-- This operation **attaches** an order; it never shops or holds one. The agent shops and
-  holds through the normal order flow, then attaches the result here. This is also the
-  entry point for the reverse journey: an agent finishing a booking may attach that
+  whoever is filling the proposal. Offer options hold nothing and are not counted.
+- This operation **attaches**; it never shops or holds. For an order option the agent
+  shops and holds through the normal order flow, then attaches the result. For an offer
+  option it stores the **replay record** of a search the agent already ran. This is also
+  the entry point for the reverse journey: an agent finishing a booking may attach that
   order to any of their agency's proposals in `New`, `Open`, `Sent` or `Pending`.
+- **Every option carries an optional service fee**, the consultant's choice per option.
+  Empty means the agency charges none on it: nothing is shown and nothing is copied to
+  the order. A value, zero included, is added when the option is presented and copied
+  into the order's service fee when the option is booked or its order confirmed. The fee
+  is never read from the order.
+
+## Two kinds of option
+
+An option is an **order option** or an **offer option**. There is no third kind.
+
+| | Order option | Offer option |
+|---|---|---|
+| What is stored | The held order (`order_id`) | A **replay record**: the original search request, the exact flights chosen (carrier, flight number and departure date per segment) and the fare brand |
+| Price shown | The order's price, live from the order | Reshopped from scratch each time the option is presented, reused only within its `offerExpiration` |
+| Clock shown | The order's `paymentTimeLimit` — a held price | The offer's `offerExpiration`, typically minutes — a live price that may change next time |
+| Valid until | Its `paymentTimeLimit` (or `priceGuaranteeTimeLimit`, if earlier) passes | Its first flight departs, or a reshop no longer finds the combination |
+| Airline record | PNR from the start | None until booked; then the new order is linked to the option |
+
+Offer options exist because many carriers, low-cost carriers above all, cannot hold: an
+agency could never otherwise put their flights in front of a traveller. **The offer itself
+is never stored as the truth** — it is perishable; only the path that produced it is.
+
+Rules that follow:
+
+- **A reshop that no longer finds the combination** (same segments, same fare brand)
+  returns the option as **not available**, with no price and nothing to approve, and
+  writes `OptionUnavailable` against `System` once per change into that state. That is a
+  presentation state, not an option status: a later reshop that finds it again makes it
+  available again.
+- **The traveller approves an offer option at the live price they were shown**, with no
+  agent check. An approval that arrives after that price's `offerExpiration` is answered
+  with a fresh reshop, and the traveller approves again.
+- **Fee display** is fixed on the proposal when it is sent, from the agency's setting or the
+  agent's choice: `Transparent` shows the fare and the service fee apart, `TotalOnly` shows
+  one total and discloses no fee to the traveller. The agency always sees both.
+
+## The traveller decides, the robot acts
+
+The traveller's operations — approve, reject, request changes, cancel, message — **record a
+decision and return**. None of them books, issues or cancels anything, and no airline call
+runs inside them. Airline work is the **proposals robot**'s: a background task that
+observes proposals and nothing else.
+
+- **Auto ticketing** is a flag fixed on the proposal when it is sent, from the agency's
+  setting (`Off`, `On`, or left to the agent). With it on, an approval queues the robot,
+  which books an offer option on hold (`airOrderCreate`, then links the order to the
+  option) and issues it (`airOrderIssue`), or issues an order option's held order, paying
+  with the **default form of payment of the governing payment rule**. It writes
+  `OptionAutoTicketed`; the order reaching `Issued` then confirms the proposal by
+  [Confirmed follows the ticket](#confirmed-follows-the-ticket), unchanged.
+- **If issuing fails** — including when the rule has no default — the option stays
+  `Approved`, an order already booked for it stays linked and held, never issued unpaid,
+  the siblings keep their holds, and `OptionAutoTicketFailed` names the reason.
+- **With auto ticketing off**, the approved option waits for an agent, who reshops and
+  issues it at the price then; that price is the agency's risk.
+- **Releasing holds** — rejected options, and siblings not chosen once `Confirmed` — is the
+  robot's too, as the cancellation dispatch was.
+
+This is why approval moves the proposal to `Pending`, not `Confirmed`: the traveller has
+decided, and the agency (by hand or through its robot) still owes the ticket.
 
 ## Origin
 
@@ -491,9 +582,9 @@ approved by the traveller, so this records provenance rather than behaviour.
 | Actor | Who |
 |---|---|
 | `Agent` | An agency agent, acting in BookingPad. |
-| `Traveller` | The main (first adult) passenger — the sole approver. |
+| `Traveller` | The proposal's **main contact**: one traveller profile of the agency, the sole approver. Acts in the traveller app, or in the travellers web app through a magic link. |
 | `Admin` | An AirGateway operator acting through the hub console. Kept distinct from the agency's own agents so a support intervention is never mistaken for something the agency did. |
-| `System` | Nobody performed it by hand: the expiry sweep, the cancellation dispatch. |
+| `System` | Nobody performed it by hand: the expiry sweep, the proposals robot, a reshop finding an offer gone, the move back to `Open` after every option is rejected. |
 
 ## History actions
 
@@ -509,8 +600,13 @@ says they did.
 | `OptionOffered` | An agent attached an option. Details name it and the order backing it. |
 | `OptionWithdrawn` | An agent pulled an option back. |
 | `ProposalSent` | The proposal was sent to the traveller. `details.resend` is `true` for every send after the first, so the trail shows the round trips rather than flattening them. |
+| `OptionRejected` | An option was rejected — by `proposalOptionReject` (traveller, or agent with `details.on_behalf_of_traveller: true` and a **mandatory** comment), or against `System` with `details.reason: "NotChosen"` when the proposal was confirmed without it. |
+| `ProposalReopened` | A rejection left no option `Offered` or `Approved`, so the proposal went back to `Open`. `System` actor, `details.reason: "AllOptionsRejected"`. |
+| `OptionUnavailable` | A reshop no longer found an offer option's flights. `System` actor. |
+| `OptionAutoTicketed` | The proposals robot issued an approved option. Details name the order. `System` actor. |
+| `OptionAutoTicketFailed` | The proposals robot could not issue an approved option. Details carry the reason. `System` actor. |
 | `ChangesRequested` | The traveller asked for different options or added detail. Their comment is in the details. |
-| `OptionApproved` | One or more options were approved. Details name **all** of them, and how many siblings that rejected. Normally the traveller's own act; when an agent recorded a choice the traveller gave them outside the app, the actor is the agent, `details.on_behalf_of_traveller` is `true` and `details.comment` (**mandatory** there) names the channel. |
+| `OptionApproved` | One or more options were approved. Details name **all** of them; siblings stay `Offered`. Normally the traveller's own act; when an agent recorded a choice the traveller gave them outside the app, the actor is the agent, `details.on_behalf_of_traveller` is `true` and `details.comment` (**mandatory** there) names the channel. |
 | `ProposalCancelled` | The proposal was cancelled. The actor says by which side. Comment **optional for the traveller** — forcing one produces filler rather than insight — and **mandatory for an agent or admin**, where it names the external channel the traveller's decision arrived through. |
 | `ProposalConfirmed` | The proposal reached `Confirmed`. Against `System` with `details.trigger: "OrderIssued"`, `details.order` and `details.option` when the approved order's ticket confirmed it; against the agent when confirmed by hand. |
 | `ProposalExpired` | The deadline fell due. `System` actor. |
@@ -518,7 +614,7 @@ says they did.
 | `NoteAdded` | An internal free-text note. The agency talking to itself. |
 | `TravellerMessaged` | An agent wrote **to the traveller**. Kept apart from `NoteAdded` because the trail is evidence an agency shows that customer, so which of the two it was has to be legible. |
 | `AgencyMessaged` | The traveller wrote **to the agency**. The other half of `TravellerMessaged`, and the reason the trail needs no separate messages resource: the pair *is* the thread, each entry carrying its text in `details.message`, and the direction is legible from the action alone rather than inferred from the actor. Both are visible to both sides. |
-| `OptionCancelRequested` | A rejected option's airline hold was handed to the cancellation dispatch. One entry **per attempt**, so the trail shows the retrying rather than hiding it. `System` actor. |
+| `OptionCancelRequested` | A rejected option's airline hold was handed to the cancellation dispatch (the proposals robot's release job). One entry **per attempt**, so the trail shows the retrying rather than hiding it. `System` actor. |
 | `OptionCancelFailed` | Releasing a rejected option's hold failed permanently. `System` actor. |
 
 ### The two trails
@@ -530,7 +626,8 @@ expired, deadline changed, and both halves of the conversation they are party to
 `OptionApproved` an agent entered on their behalf, comment and all**, and **not** the
 parts where the agency is talking
 to itself: `NoteAdded`, `AgentAssigned`, `OptionCancelRequested`, `OptionCancelFailed`,
-and anything an `Admin` did. That split is why an internal note and a message to the
+`ProposalReopened`, `OptionUnavailable`, `OptionAutoTicketed`, `OptionAutoTicketFailed`,
+and anything an `Admin` did. `OptionRejected` is in the traveller's trail. That split is why an internal note and a message to the
 traveller are separate actions rather than one.
 
 ## Activity — the trail, aggregated
@@ -561,8 +658,8 @@ every entry on it would vanish from the feed **including the entry that just rec
 it**, and a feed that can never show a confirmation is not a feed.
 
 The stronger reason is the cancellation dispatch. It is asynchronous and writes
-`OptionCancelRequested` / `OptionCancelFailed` some time after the approval that queued
-them, so one of those entries can land on a proposal that has gone terminal in between.
+`OptionCancelRequested` / `OptionCancelFailed` some time after the rejection or
+confirmation that queued them, so one of those entries can land on a proposal that has gone terminal in between.
 A status-filtered feed would hide precisely the `OptionCancelFailed` that needs an
 agent, on precisely the proposals nobody is looking at any more. Time ordering already
 buries dead proposals; that is the whole mechanism required.
@@ -616,12 +713,13 @@ So a surface acknowledges deliberately — when it has actually put the trail in
 a person, and from an explicit "mark all as read". Acknowledging with no proposal named
 covers every proposal in scope.
 
-### Activity is read, not delivered
+### Activity is read, not delivered — to the agency
 
-Hub has no notification channel. Nothing here emails, pushes or otherwise delivers
-anything; the feed is a thing an agent looks at, and a message reaches its recipient
-when they next read it. That is a known gap below, not a property of the design — when
-delivery arrives it hangs off these same entries.
+Nothing here delivers anything **to the agency**; the feed is a thing an agent looks at,
+and a message reaches its recipient when they next read it. That is a known gap below,
+not a property of the design — when delivery arrives it hangs off these same entries.
+The **traveller** is emailed on three events; see
+[Traveller access](#traveller-access-email-and-magic-link).
 
 ### The layer contract for activity
 
@@ -631,7 +729,7 @@ delivery arrives it hangs off these same entries.
 | **hub-api-v2** | `GET /agw/proposals/activity`, `POST /agw/proposals/activity/acknowledge`, scoped by the same `agency_id`-or-`traveller_id` pair every other proposal read takes. The traveller's narrower trail is applied by the one existing filter, never re-implemented per endpoint. |
 | **agw-api-v2** | The two operations above. Page size is **50, both maximum and default** — hub's pager caps at 50 and a spec that promised more would 500. |
 | **BookingPad** | The bell and the feed live **inside the Proposals views only**: right-aligned on the status-tab row, with the feed as a view of the existing `/proposals` route rather than a route of its own. An agent elsewhere in the product sees no badge, deliberately, for now. |
-| **Traveller app** | May read the same endpoint under its own `Traveller` audience. Not required to. |
+| **Traveller app**, **travellers web app** | May read the same endpoint under the `Traveller` audience. Not required to. |
 
 **An unknown action must still render.** Every surface reading the feed shows an action
 it does not recognise under its raw name rather than dropping the row — the rule the
@@ -658,7 +756,7 @@ Two consequences worth stating:
   under Bookings. They are the agency's shelf — options an agent is assembling, possibly
   not yet `Sent` — and showing them would leak the shelf to the traveller before the
   agent decided to show it, as well as presenting an unticketed hold as a trip.
-- **Cancelled options disappear on their own.** When an approval rejects the siblings and
+- **Cancelled options disappear on their own.** When confirmation rejects the unchosen siblings and
   the dispatch cancels their holds, those orders leave order status `Pending` for
   `Cancelled`, and were never bookings in the first place.
 
@@ -666,17 +764,54 @@ This is why [Confirmed follows the ticket](#confirmed-follows-the-ticket) matter
 traveller and not only to the agency: the moment the ticket is issued, the proposal leaves
 one list and the booking appears in the other, with no button pressed by anyone.
 
-## Deadlines: the proposal's, and the orders'
+## Traveller access: email and magic link
 
-Two independent clocks, and conflating them is a bug:
+The first traveller channel is **email**, ahead of any app. It reaches every traveller
+with nothing installed.
 
-- **The proposal's `expiresAt`** is the traveller's deadline to approve, set when the
-  proposal is raised and extendable by an agent. When it falls due, the **proposal**
-  moves to `Expired` — but only from `New`, `Open` or `Sent`.
-- **Each backing order's payment time limit** is the airline's deadline to pay. When one
-  lapses, that **option** moves to `Expired`. The proposal does not move.
+- **Recipient.** The proposal's main contact, at the email address on their profile, read
+  when the email is sent. Nobody else.
+- **Three emails**, each with a magic link: **proposal sent** (every `proposalSend`, resends
+  included); **expiry warning**, for an order option still `Offered` or `Approved`, a
+  set number of hours (agency setting, default 2) before the earlier of its order's
+  `paymentTimeLimit` and `priceGuaranteeTimeLimit`, once per option and deadline — never
+  for offer options, whose disappearance nobody can predict; **booking confirmed**, when the
+  proposal reaches `Confirmed`.
+- **Minimal content.** The agency's branding (logo, name, address — the agency's, never
+  the consumer's), route, dates, passenger counts by type and one button. No options,
+  prices, names or other personal data. English, from `proposals-noreply@bookingpad.app`;
+  replies are not read.
+- **The magic link** signs the traveller in with no password and is scoped to **that one
+  proposal**: any other proposal, the same traveller's included, is not found. It is
+  reusable and valid for the proposal's whole life, in every status — read-only outside
+  `Sent`. Every send issues a new link; earlier ones stay valid.
+- **Changing the profile's email revokes every link sent to the old address**, at once:
+  a mistyped address may already be a leak. Access returns only with a new send.
+- **The risk is accepted for now:** whoever holds the link acts as the traveller, an
+  approval with auto ticketing on included. Stronger, agency-chosen traveller
+  authentication is future work and changes nothing else on this page.
 
-A proposal with no deadline never expires on its own.
+The link opens the **travellers web app**, which shows one proposal: its options side by
+side with their clocks and prices under the fee display, and approve, reject and comment
+on `Sent`. After an approval it says only that the agency will be in touch. On a
+`Confirmed` proposal the traveller sees **only the option or options whose orders were
+issued**; the others are not listed. The agency's view is unchanged.
+
+## Deadlines: the proposal's, and the options'
+
+Three clocks, and conflating them is a bug:
+
+- **The proposal's `expiresAt`** is the deadline the agent set, extendable. When it falls
+  due, the **proposal** moves to `Expired` — but only from `New`, `Open` or `Sent`.
+- **Each option's validity.** An order option stops being valid when its order's
+  `paymentTimeLimit` passes — that lapse also moves the **option** to `Expired`. An offer
+  option stays valid until its first flight departs, or a reshop no longer finds it.
+- **The proposal also expires when it has live options (`Offered` or `Approved`) and none
+  of them is valid any more**, from `New`, `Open` or `Sent`. Whichever of this and
+  `expiresAt` comes first.
+
+`Pending` never expires, as before. A proposal with no deadline and no live options never
+expires on its own.
 
 ## The layer contract
 
@@ -694,8 +829,9 @@ rejected at the write boundary rather than created on demand.
 | **agw-api-v2** | the `status` enum in `specs/ndcjsonapiv2.openapi.yaml` | Mirrors hub's set. Never writes one hub does not declare. |
 | **BookingPad** | `shared/utils/proposal-status.utils.ts`, `features/proposals/models/proposal-status-tabs.ts` | Mirrors hub's set. Labels may differ from stored values; stored values may not. |
 | **Traveller app** | its own status mirror | Same rule. |
+| **Travellers web app** | its own status mirror | Same rule. Reads through bookingpad-backend with a magic link session, never with a Hub token. |
 
-**Adding or renaming a status touches all six.** Behaviour changes and spec changes land
+**Adding or renaming a status touches all seven.** Behaviour changes and spec changes land
 in the same PR — this file is updated first, never after the fact.
 
 ## Known gaps
@@ -705,11 +841,12 @@ Deliberate, tracked, and never precedent.
 | Gap | Status |
 |---|---|
 | **The activity feed is specified here and not yet built.** The two operations above, `bookings.proposal_history_seen` and the BookingPad bell are normative but unimplemented; this page landed first, as it must. Following in hub, then AGW API V2, then BookingPad. | In progress |
-| **Nothing is delivered.** There is no notification channel on any layer: no email, no push, no webhook out. An agency learns a traveller wrote by looking, which is what makes the feed load-bearing rather than a convenience. Delivery would hang off these entries and change nothing above. | Open |
+| **Nothing is delivered to the agency.** No email, push or webhook reaches an agency: it learns a traveller wrote by looking, which is what makes the feed load-bearing rather than a convenience. The traveller's three emails are specified above and not yet built. | Open |
+| **Offer options, rejecting one by one, reopening, the proposals robot, traveller emails, magic links and the travellers web app are specified here and not yet built.** Normative ahead of the code, as this page requires; tracked in agw-v2-specs as `add-proposal-offer-options` and `add-travellers-web-app`, both awaiting foundation-rule approval. | Open |
 | **The expiry sweep is not implemented.** `Expired` is declared, seeded and mirrored everywhere, and the transitions above are normative — but nothing yet moves a proposal into it. It will follow the `/agw/orders/status/expire` precedent: a cross-tenant scheduler-driven `POST` deriving the outstanding set from current state on every run, which makes the sweep itself the retry. | Open |
 | **An agency cannot record that *it* turned a request down.** The agency can now cancel from any live status, but `Cancelled` asserts the **traveller's** decision however it was entered, so *the agency declined this* is still not recordable and "how often did we turn work away?" cannot be answered apart from "how often did customers say no?". An agency-side terminal status is the fix if that question is ever asked — reusing `Cancelled` for it is not, because it would corrupt the one thing that status means. | Open |
 | **The vocabulary is migrated in hub; the other layers follow.** hub-api-v2 stores the seven statuses above, the six option statuses and the action names on this page (migration `20260908135533_proposals_canonical_vocabulary`), and ships `proposalCancel` (both scopes, any live status), `proposalApprove` (both scopes) and Confirmed-on-issue. AGW API V2, BookingPad and the traveller app are being migrated in the PRs that follow hub's; until each lands, that layer still speaks the older set. | In progress |
 | **Send is not its own operation.** Attaching the first option still moves the proposal to `Sent` on every layer; `proposalSend` and the `Pending` → `Sent` resend do not exist, and `proposalRequestChanges` does not either. The transitions above are normative regardless. | Open |
-| **Approve takes one option, not a list.** `proposalApprove` on every layer approves a single `option_agw_id`; the wholesale-replace list semantics above are not implemented. The at-most-one index is gone from the database, so nothing blocks the list — it is only not built. | Open |
+| **Approve takes one option, not a list, and rejects the siblings.** `proposalApprove` on every layer approves a single `option_agw_id` and moves the other options to `Rejected` at once; the list, and siblings staying `Offered` until `Confirmed`, are not implemented. | Open |
 | **Expired options' airline holds are not released.** Cancelling a proposal moves its `Offered` and `Approved` options to `Expired`, but the cancellation dispatch follows `Rejected` options only, so those orders stay held with the airline until their own payment time limit lapses. Extending the dispatch to `Expired` options of a `Cancelled` proposal is the fix; naming a failure there `RejectionFailed` would be wrong, so it wants its own status or a rename first. | Open |
 | **BookingPad has no agent-side approve or cancel yet.** Both exist on hub; BookingPad's action bar still shows the status-gated "Reject" that the old close carried, and no per-option approve. Follows in the BookingPad PR. | In progress |
